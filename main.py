@@ -487,7 +487,22 @@ def main():
     # ── 1. Load video ──────────────────────────────────────────────
     logger.info("[1/9] Loading video frames...")
     input_path = cfg["io"]["input_video"]
-    video_frames = read_video(input_path)
+    _probe = cv2.VideoCapture(input_path)
+    _total = int(_probe.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    _w = int(_probe.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    _h = int(_probe.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    _probe.release()
+    if _total and _w and _h:
+        _gib = _total * _w * _h * 3 / (1024 ** 3)
+        _reading = min(_total, args.max_frames) if args.max_frames else _total
+        logger.info(f"  {_total} frames at {_w}x{_h}; reading {_reading} "
+                    f"(~{_reading * _w * _h * 3 / (1024 ** 3):.1f} GiB in RAM)")
+        if not args.max_frames and _gib > 8:
+            logger.warning(f"  This clip needs ~{_gib:.1f} GiB of RAM: every frame is "
+                           f"held at once. Pass --max-frames, or trim the clip first "
+                           f"(ffmpeg -i in.mp4 -t 30 -c copy out.mp4).")
+
+    video_frames = read_video(input_path, args.max_frames)
     if not video_frames:
         logger.error(f"No frames could be read from {input_path}. The file may be "
                      f"missing, empty, or in a codec OpenCV cannot decode.")
@@ -500,12 +515,16 @@ def main():
     # tools/label_shots.py did not, so the labelling tool could seed ground truth from
     # 40 frames of a 570-frame video. The end-to-end smoke test runs exactly this way,
     # so running the test suite was enough to trigger it.
-    truncated = bool(args.max_frames and args.max_frames < len(video_frames))
+    # The decode now stops at max_frames, so the old test (max_frames < len) can no
+    # longer fire: the list is exactly max_frames long. Reading the limit is treated
+    # as truncation, which errs toward not caching when a clip happens to be exactly
+    # N frames. Declining to cache a complete run costs one re-run; caching a partial
+    # one as if it were complete is the failure this guard exists to prevent.
+    truncated = bool(args.max_frames and len(video_frames) >= args.max_frames)
     if truncated:
-        logger.info(f"  Limiting to first {args.max_frames} frames (--max-frames). "
+        logger.info(f"  Stopped at the first {args.max_frames} frames (--max-frames). "
                     f"Detections from this run will NOT be cached, because they do not "
                     f"describe the whole clip.")
-        video_frames = video_frames[:args.max_frames]
 
     cap = cv2.VideoCapture(input_path)
     header_fps = cap.get(cv2.CAP_PROP_FPS)

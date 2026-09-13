@@ -60,7 +60,20 @@ def stub_matches_frames(detections, frames) -> bool:
     return len(detections) == len(frames)
 
 
-def read_video(video_path):
+def read_video(video_path, max_frames=0):
+    """
+    Decode a video into a list of frames, held in memory all at once.
+
+    `max_frames` stops the decode at N frames. It exists because the caller used to
+    read the entire file and slice afterwards, which makes --max-frames useless for
+    the case it documents: "quick check on a long video before a full run". A 1080p
+    frame is 5.93 MiB, so the whole-file read exhausts 32 GB of RAM at roughly 5,500
+    frames and dies inside cv2 with an allocation error that names neither the video
+    nor the flag that was supposed to prevent it.
+
+    0 (the default) reads everything, which is still the right behaviour for a clip
+    that fits. Every existing caller passes nothing and is unaffected.
+    """
     cap = cv2.VideoCapture(video_path)
     frames = []
     while True:
@@ -68,6 +81,8 @@ def read_video(video_path):
         if not ret:
             break
         frames.append(frame)
+        if max_frames and len(frames) >= max_frames:
+            break
     cap.release()
     return frames
 
