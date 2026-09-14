@@ -11,6 +11,112 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Hand-placed court geometry, for footage the keypoint model cannot read.**
+  `tools/calibrate_court.py` places the fourteen court points once per camera position;
+  `utils/court_calibration.py` stores them, refuses a set that does not describe a court,
+  and the pipeline uses them in place of the model. Discovery is by video name
+  (`calibration/<video name>.json`), with `--court-calibration FILE` to reuse one
+  calibration across every clip from the same camera and `--no-court-calibration` to
+  compare against the model it replaced.
+
+  The court model is trained on broadcast tennis. On a phone or an action camera behind
+  the baseline it returns a tidy quadrilateral that is not the court, the validity gate
+  refuses the clip, and the user has nowhere to go. On a fixed camera the court does not
+  move, so it is a property of the camera rather than of the frame.
+
+  **Points are corrected by dragging them.** The first version placed points and had no
+  way to move one: a mis-click could only be fixed by reselecting that point from the
+  keyboard, which nobody guessed, so the tool read as all-or-nothing. Any point can now be
+  grabbed and dragged at any time, including one the fit filled in - which is the common
+  case, since the fit's guess is usually close and nudging it beats starting over.
+  Grabbing does not move a point until the mouse does, a whole drag is one undo rather
+  than one per mouse-move event, and undo restores a moved point rather than deleting it.
+  The point under the cursor is highlighted and named, and a plan view of the court shows
+  which point is being asked for, because "FAR service line x LEFT singles sideline" is
+  harder to resolve on unfamiliar footage than a picture.
+
+  **The canvas is larger than the video, because some court corners are not in it.** A
+  wide camera close to the baseline routinely puts a near doubles corner outside its own
+  frame - on the reference clip, 70px past the right edge. There was no pixel to click and
+  no drag that could reach it, so that point could not be corrected at all. The video now
+  sits inside a border with the court's continuation drawn around it, the view grows by
+  itself when an edit puts a point outside it, and the arrow keys nudge the selected point
+  a pixel at a time whether it is in the picture or not. The banner names any point that
+  is outside and says that nothing out there can be checked against paint.
+
+  **The window is fitted to the screen.** It was sized to a constant, so on a smaller
+  display it opened wider than the desktop with the controls and the outermost points off
+  the edge, and an `AUTOSIZE` window cannot be dragged back. `--max-size WxH` overrides
+  the detected size.
+
+- **The calibration also says which court is being analysed.** Club footage shows the next
+  court along, and the players on it are real people the detector is right to find: on one
+  3,600-frame clip it tracked fifteen people. Detections whose feet fall outside the court
+  and its playing margin are dropped before player selection, and hand-drawn exclusion
+  zones remove anything still in the way. The margin is in metres, not pixels, because
+  perspective makes a fixed pixel margin far too tight near the camera and far too loose
+  at the far end.
+
+  Measured on 600 frames of amateur footage, everything else unchanged: court fit failed
+  at 0.076 line support and now passes by placement; people reaching player selection 15
+  to 2; player 1 coverage 19% with a 2,439-frame hole to 93%; players on opposite sides of
+  the net no to yes; 3-D reconstruction refused to 13 segments of which 5 are shots.
+
+### Changed
+
+- **The line-support gate does not apply to a calibrated run**, and `summary.json` says so
+  through a new `court_source` field. The gate exists because a regression head cannot
+  report being out of distribution; a person who placed the points on the lines and
+  checked the overlay has answered that with better evidence. The gate samples straight
+  segments between corners, which a wide lens bends, so it scores a correct court low. The
+  measurement is still taken and still published as `court_line_support`.
+
+- **`people_detected` in `summary.json` is now counted before court filtering.** Reporting
+  the post-filter number would make a clip crowded with a neighbouring court's match look
+  like an empty one.
+
+### Fixed
+
+- `test_no_mkdir_forgets_its_parents` skipped a virtualenv called `venv` but not one
+  called `.venv`, so it failed on every checkout using the dotted name - scanning
+  site-packages and reporting third-party code as offenders.
+
+- **`--help` crashed on nine of this project's own commands.** The house style rules a
+  docstring off with box characters, and those scripts pass the docstring to argparse as
+  its description; argparse writes help to a console that is cp1252 on a default Windows
+  install, so `--help` raised `UnicodeEncodeError` before printing a line. Among them were
+  four of the eval scripts the README tells people to run. A test now asserts that any
+  docstring used as argparse help is ASCII.
+
+- **A subcommand's own `--help` was unreachable.** `tennis-vision --help` ends with "Run
+  'tennis-vision <command> --help' for command-specific options", and that did not work:
+  the top-level parser's `-h` matched first, so `tennis-vision analyze --help` printed the
+  top-level command list instead of analyze's flags. Dispatch now happens before argparse
+  sees the arguments.
+
+### Known limitation
+
+A homography assumes straight lines and a wide action camera bends them. The fourteen
+points are unaffected, being placed where the corners really appear, but anything mapped
+through the homography carries the error. It is measured and published as
+`court_calibration.lens_error_px` rather than assumed away: on the reference amateur clip
+a single homography sits about 10px rms from the painted lines. Lens correction is not
+implemented.
+
+### Tests
+
+61 added: the conventions the calibration shares with the mini-court and the validity
+gate, the ordering mistakes it must refuse, the metric margin, which detections survive
+the court region, what a drag moves and what undo restores, the view that reaches a point
+outside the video, the arrow-key nudge and how it collapses into one undo, that argparse
+help text is printable, and that a subcommand's help is reachable. 412 to 473.
+
+---
+
 ## [2.1.1] - 2026-09-07
 
 Two defects that broke the documented first-run path for every new user, and were

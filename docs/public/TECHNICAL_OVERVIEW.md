@@ -22,7 +22,9 @@ video
   ├─ 3  PlayerTracker                 YOLOv8x + ByteTrack, every person
   ├─ 4  TrackNetBallTracker           3-frame stack, heatmap, largest blob
   ├─ 5  CourtLineDetector             ResNet-50, 14 keypoints, per frame
+  │     or CourtCalibration           14 points placed once, by hand
   ├─ 6  assess_court_fit              are those lines on actual paint?            [GATE]
+  │     filter_detections             whose feet are on THIS court?
   ├─ 7  select_two_players            six criteria over the whole clip
   ├─ 8  assess_selection              are they on opposite sides of the net?      [GATE]
   ├─ 9  MiniCourt homography          cv2.findHomography, RANSAC, cached
@@ -167,6 +169,41 @@ regression head: given any image it returns 14 numbers. On unfamiliar footage it
 tidy quadrilateral that simply is not the court - often on the crowd. Everything
 downstream then computes confidently from it. This is the single most dangerous failure in
 the system, which is why the next stage exists.
+
+---
+
+## 5b · Hand-placed court geometry `utils/court_calibration.py`
+
+**What** Replaces the model with fourteen points a person placed once, and reports the
+region of the image that court occupies.
+
+**Why** The model is trained on broadcast tennis and cannot generalise to a phone or an
+action camera behind the baseline, which is what club footage actually is. But on a fixed
+camera the court is not a per-frame inference problem at all: it does not move, so its
+position is a property of the camera. Fourteen points describe every frame of every clip
+shot from that spot, and the model has nothing left to infer.
+
+**Algorithm** A metric model of a real court, in the same index order the mini-court draws
+and the validity gate scores, fitted to whatever subset of points was placed. Placed points
+are kept exactly as placed and the rest are filled in from the fit - a clicked point is
+where the corner really appears, a fitted one is where a pinhole camera would have put it,
+and on a distorted lens only the first is true. The court region is the court widened by a
+margin in **metres**, sampled along each edge so it follows the perspective, because
+perspective makes a fixed pixel margin far too tight near the camera and far too loose at
+the far end, which is exactly where the next court sits.
+
+**Assumption** The camera does not move between the calibrated frame and the rest of the
+clip, and the court is planar. Both hold for a tripod or a clamp, and neither holds for
+handheld or broadcast footage - which still uses the model.
+
+**Failure mode** A calibration is trusted in place of a gate, so a wrong one is silent.
+Three things stand against that: the geometry is refused outright if the points do not
+describe a court (`validate_geometry` catches the ordering mistakes a person can make
+while looking straight at it - halves swapped, court mirrored, a centre T off its service
+line); the court is drawn on the output video so the placement can be checked by eye; and
+lens error is measured and reported rather than assumed away. It is a real reduction in
+automatic safety, taken deliberately, because the alternative on this footage is refusing
+every clip.
 
 ---
 

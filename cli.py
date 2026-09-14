@@ -8,6 +8,7 @@ so there is exactly one code path per capability and the CLI cannot drift from w
 `python main.py` does.
 
     tennis-vision analyze clip.mp4 -o output/run.avi
+    tennis-vision calibrate clip.mp4
     tennis-vision download-models
     tennis-vision version
 """
@@ -39,6 +40,13 @@ def _cmd_analyze(argv: list[str]) -> int:
     parser.add_argument("--fast", action="store_true",
                         help="single-frame court keypoints; faster, less camera-robust")
     parser.add_argument("--debug", action="store_true", help="verbose logging")
+    parser.add_argument("--court-calibration", metavar="FILE", default=None,
+                        help="hand-placed court geometry (tennis-vision calibrate). "
+                             "Found automatically at calibration/<video name>.json, so "
+                             "pass this only to reuse one calibration across clips from "
+                             "the same camera position")
+    parser.add_argument("--no-court-calibration", action="store_true",
+                        help="ignore any calibration file and use the keypoint model")
     args = parser.parse_args(argv)
 
     if not Path(args.input).exists():
@@ -58,6 +66,10 @@ def _cmd_analyze(argv: list[str]) -> int:
         forwarded.append("--fast")
     if args.debug:
         forwarded.append("--debug")
+    if args.court_calibration:
+        forwarded += ["--court-calibration", args.court_calibration]
+    if args.no_court_calibration:
+        forwarded.append("--no-court-calibration")
 
     import main as pipeline
 
@@ -68,6 +80,19 @@ def _cmd_analyze(argv: list[str]) -> int:
     finally:
         sys.argv = original_argv
     return 0
+
+
+def _cmd_calibrate(argv: list[str]) -> int:
+    """Place the court by hand for one camera position."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from tools import calibrate_court
+
+    original_argv = sys.argv
+    try:
+        sys.argv = ["calibrate_court.py", *argv]
+        return calibrate_court.main()
+    finally:
+        sys.argv = original_argv
 
 
 def _cmd_download_models(argv: list[str]) -> int:
@@ -90,14 +115,27 @@ def main() -> int:
         epilog="Run 'tennis-vision <command> --help' for command-specific options.",
     )
     parser.add_argument("command", nargs="?", default="help",
-                        choices=["analyze", "download-models", "version", "help"],
+                        choices=["analyze", "calibrate", "download-models",
+                                 "version", "help"],
                         help="what to do")
-    args, rest = parser.parse_known_args()
 
-    if args.command == "analyze":
-        return _cmd_analyze(rest)
-    if args.command == "download-models":
-        return _cmd_download_models(rest)
+    # Dispatch off sys.argv BEFORE argparse sees it, so that a -h after a subcommand
+    # reaches that subcommand's own parser. The epilog just above promises exactly this
+    # and it did not work: argparse's top-level -h matched first, so
+    # `tennis-vision analyze --help` printed this help and none of analyze's flags -
+    # including the ones that are the only way to discover a feature exists.
+    subcommands = {
+        "analyze": _cmd_analyze,
+        "calibrate": _cmd_calibrate,
+        "download-models": _cmd_download_models,
+    }
+    argv = sys.argv[1:]
+    if argv and argv[0] in subcommands:
+        return subcommands[argv[0]](argv[1:])
+
+    args, rest = parser.parse_known_args()
+    if args.command in subcommands:
+        return subcommands[args.command](rest)
     if args.command == "version":
         print(f"tennis-vision {__version__}")
         return 0

@@ -88,6 +88,17 @@ datasets/source_videos/
 # Debug/scratch files
 tracknet_eval_debug.txt
 
+# Footage dropped in the repo root for a quick run. The clips under input_videos/ are the
+# tracked reference ones; anything at the top level is somebody's own recording and is
+# usually hundreds of megabytes.
+/*.mp4
+/*.avi
+/*.mov
+/*.mkv
+
+# Patch files exported while moving work between machines.
+/*.patch
+
 # Personal prep / private notes (never commit)
 prep_james/
 image.png

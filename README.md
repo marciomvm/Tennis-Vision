@@ -55,6 +55,83 @@ Outputs land in `output/`: an annotated video, a per-frame stats CSV, a run summ
 and an interactive 3-D viewer as a single self-contained HTML file with no external
 dependencies.
 
+## Your own footage
+
+The court keypoint model was trained on broadcast tennis: a high, centred, long-lens
+camera. Point it at a phone on a fence post, or an action camera behind the baseline, and
+it returns fourteen tidy points that are not on the court. The validity gate catches that
+and refuses the clip, which is correct and leaves you with nothing to run. On club footage
+that is not a rare failure, it is the normal case.
+
+A fixed camera makes this a much smaller problem than the model is solving. The court does
+not move, so its position is a property of the **camera**, not of the frame: fourteen
+points placed once describe every frame of every clip shot from that spot.
+
+```bash
+tennis-vision calibrate my_clip.mp4     # click the court once, roughly two minutes
+tennis-vision analyze   my_clip.mp4     # found automatically from here on
+```
+
+Click each point as the prompt asks for it, and **drag any point to correct it** - one
+you placed, or one the fit filled in. A plan view in the corner shows which point is being
+asked for, the point under the cursor is highlighted and named, and `u` undoes the last
+edit, whether that was a placement or a drag. Reopening the tool on a video that already
+has a calibration loads it for adjustment rather than starting over.
+
+**Some court corners are outside the video**, which is normal on a wide camera close to
+the baseline: on the reference clip the near-right doubles corner lands 70px past the
+right edge. The canvas is therefore larger than the picture, the video sits inside a
+border, and a point out there is clicked and dragged like any other. The arrow keys nudge
+the selected point a pixel at a time, in or out of the picture. Nothing out there can be
+checked against paint, so `Tab` leaves such a point at the fit's own guess, which is
+usually the best answer available.
+
+If the window opens larger than your screen, pass `--max-size 1280x720`. It is fitted to
+the detected screen size by default and cannot be resized once open.
+
+The calibration is written to `calibration/<video name>.json` and discovered by video
+name. One camera position, many recordings: point later clips at the same file rather
+than redoing the clicks.
+
+```bash
+tennis-vision analyze another_clip.mp4 --court-calibration calibration/my_clip.json
+tennis-vision analyze my_clip.mp4 --no-court-calibration   # compare against the model
+```
+
+**It also decides which court is yours.** Club footage shows the next court along, and the
+players on it are real people the detector is entirely right to find - on one 3,600-frame
+clip here it tracked fifteen. Nothing in the image says which court is being analysed, so
+the calibration does: people whose feet are outside the court and its playing margin are
+dropped before player selection. The margin is specified in **metres**, not pixels,
+because perspective makes three metres a wide band at the bottom of the frame and a
+handful of pixels at the top. If something is still in the way - a bench, a walkway, a
+doubles match alongside - draw an exclusion zone with `x` in the calibration tool.
+
+Measured on one clip of amateur footage, first 600 frames, with everything else unchanged:
+
+| | keypoint model | hand-placed |
+|---|---|---|
+| Court fit | failed, 0.076 line support | placed and verified by eye |
+| People reaching player selection | 15 | 2 |
+| Player 1 coverage | 19%, with a 2,439-frame hole | 93% |
+| Players on opposite sides of the net | no | yes |
+| 3-D reconstruction | refused | 13 segments, 5 shots |
+
+**What it does not fix.** A homography assumes straight lines, and a wide action camera
+bends them. The fourteen points are unaffected, since each is placed where the corner
+really appears, but anything mapped *through* the homography carries that error. The tool
+and the run summary both report it as `lens_error_px`, so the cost is measured rather than
+assumed. On the clip above a single homography sits about 10px rms from the painted lines.
+
+**The validity gate does not apply to a calibrated run, deliberately.** The gate exists
+because a regression head cannot say "this camera angle is outside my training
+distribution". A person who placed the points on the lines and looked at the overlay has
+already answered that, with better evidence: the gate samples straight segments between
+corners, and on a wide lens the painted line between them is curved, so it scores a
+correct court low. The measurement is still taken and still reported in `summary.json` as
+`court_line_support`; it just no longer decides. `court_source` says which of the two
+produced the geometry.
+
 ## What it does
 
 **Ball tracking.** TrackNet, with the position taken from the largest connected heatmap
@@ -66,7 +143,9 @@ on the ground.
 
 **Court geometry.** ResNet-50 keypoint regression, 14 points, re-detected per frame so
 camera pan and tilt are handled, then a real perspective homography via
-`cv2.findHomography`.
+`cv2.findHomography`. On a fixed camera the model can be replaced entirely by fourteen
+points placed once by hand, which is what makes amateur footage work at all - see *Your
+own footage* above.
 
 **Court validity gate.** The keypoint model is a plain regression head with no way to say
 "this camera angle is outside my training distribution". On unfamiliar footage it returns a
@@ -472,12 +551,12 @@ on for repeated runs against the same clip.
 
 ### Test suite
 
-**412 unit and integration tests** (`pytest tests/`), covering ball-state classification,
+**473 unit and integration tests** (`pytest tests/`), covering ball-state classification,
 Kalman and RTS smoothing including the physical speed-plausibility gate, mini-court
 coordinate mapping, trajectory drawing, pose-based shot classification, the hit and bounce
 classifier and its feature contract, the rally grammar and its decoder, the no-ground-truth
-rally audit, TrackNet postprocessing geometry, detection-cache keying, and packaging
-integrity.
+rally audit, TrackNet postprocessing geometry, detection-cache keying, hand-placed court
+calibration and the court region it defines, and packaging integrity.
 
 The end-to-end smoke test runs genuine fresh detection and depends on no cached artefacts,
 so it fails for everyone if the pipeline breaks.
@@ -803,8 +882,8 @@ Ordered by measured value, not by interest.
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/                                       # 412 tests, needs the weights
-pytest tests/ -m "not slow"                         # 411, what CI runs, no weights
+pytest tests/                                       # 473 tests, needs the weights
+pytest tests/ -m "not slow"                         # 472, what CI runs, no weights
 
 python eval/shot_frame_accuracy.py                  # reference clip, ships with repo
 python eval/speed_accuracy.py                       # reference clip, ships with repo
@@ -825,6 +904,7 @@ python eval/court_keypoint_accuracy.py                        # needs dataset
 ## Repository layout
 
 ```
+calibration/          hand-placed court geometry, one JSON per camera position
 configs/              config.yaml, every tunable parameter
 constants/            court dimensions, physical plausibility bounds
 court_line_detector/  ResNet-50 court keypoint regression
@@ -833,12 +913,13 @@ mini_visual_court/    mini-court mapping and trajectory drawing
 models/               small trained weights (committed); large weights fetched by script
 notes/                CV concept write-ups
 scripts/              download_models.py, build_clip_suite.py
-tests/                412 unit and integration tests
-tools/                label_shots.py, keyboard-driven contact and bounce labelling
+tests/                473 unit and integration tests
+tools/                calibrate_court.py, label_shots.py, diagnose_court.py
 trackers/             tracknet_ball_tracker.py, player_tracker.py
 training/             court keypoint and shot classifier training
-utils/                ball_state, court_validity, hit_bounce_classifier, kalman_smoother,
-                      serve_detector, serve_landing, trajectory_3d, viewer_3d, and more
+utils/                ball_state, court_calibration, court_validity,
+                      hit_bounce_classifier, kalman_smoother, serve_detector,
+                      serve_landing, trajectory_3d, viewer_3d, and more
 main.py               pipeline entry point
 cli.py                tennis-vision command
 ```

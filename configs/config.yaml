@@ -53,6 +53,41 @@ detection:
   ball_confidence: 0.6
   shot_player_distance_px: 300  # ball must be within this many px of a player to count as a shot (not a bounce)
 
+court_calibration:
+  # Hand-placed court geometry, for footage the keypoint model cannot read. The model
+  # was trained on broadcast tennis; on a phone or an action camera behind the baseline
+  # it returns fourteen tidy points that are not on the court, and the validity gate
+  # then refuses the clip. A fixed camera makes that a much smaller problem than the
+  # model is solving: the court does not move, so fourteen points placed once describe
+  # every frame of every clip shot from that position.
+  #
+  #   python tools/calibrate_court.py my_clip.mp4      # place them, once
+  #   python main.py --input my_clip.mp4               # found automatically
+  #
+  # Reuse one calibration across clips from the same camera with
+  # --court-calibration calibration/that_file.json, and ignore it entirely with
+  # --no-court-calibration.
+  dir: "calibration"          # auto-discovery: <dir>/<video file name>.json
+
+  # Ignore people who are not on this court. Club footage shows the next court along,
+  # and the players there are real people the detector is right to find - only the
+  # calibration knows which court is the one being analysed.
+  mask_players: true
+
+  # The same for the ball, OFF by default and not an oversight. The court region is a
+  # FLOOR region and the ball spends most of a rally above it: a lob or a serve toss
+  # leaves the polygon while being entirely in play. Turn this on only if a neighbouring
+  # court is actually stealing the ball detector, then check the drop count it reports.
+  mask_ball: false
+
+  # How far outside the paint a person can stand and still be a player, in METRES, not
+  # pixels: perspective makes three metres a wide band at the bottom of the frame and a
+  # few pixels at the top. Behind the near baseline is generous because a low camera
+  # behind the court sees the near player retreat a long way.
+  margin_beside_sideline_m: 3.0
+  margin_behind_far_baseline_m: 4.0
+  margin_behind_near_baseline_m: 8.0
+
 shot_classifier:
   volley_distance_threshold: 40   # px from net on mini-court (was 150 - was broken)
   smash_height_threshold: 0.7     # ball_y delta > this fraction of mini-court height

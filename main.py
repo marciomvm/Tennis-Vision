@@ -57,6 +57,17 @@ from utils import (
 )
 from utils.bounce_candidates import detect_bounce_candidates
 from utils.calibration_banner import draw_calibration_warning, draw_frame_rate_warning
+from utils.court_calibration import (
+    CourtCalibration,
+    centre_point,
+    draw_court_on_video,
+    draw_region,
+    filter_detections,
+    find_calibration_for,
+    foot_point,
+    reprojection_residuals,
+    validate_geometry,
+)
 from utils.fps_support import SUPPORTED_MAX_FPS, SUPPORTED_MIN_FPS, assess_fps
 from utils.serve_detector import detect_serve_frames
 from utils.serve_landing import find_serve_landing
@@ -89,6 +100,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-frames", type=_positive_int, default=0, metavar="N",
                    help="Process only the first N frames (0 = all). Useful for a quick "
                         "check on a long video before committing to a full run.")
+    p.add_argument("--court-calibration", metavar="FILE",
+                   help="Hand-placed court geometry from tools/calibrate_court.py. "
+                        "Defaults to calibration/<video name>.json when that exists, so "
+                        "pass this only to reuse ONE calibration across several clips "
+                        "shot from the same camera position.")
+    p.add_argument("--no-court-calibration", action="store_true",
+                   help="Ignore any calibration file and use the keypoint model, which "
+                        "is how a calibration is compared against the model it replaced.")
     return p.parse_args()
 
 
@@ -177,6 +196,21 @@ _DEFAULTS: dict = {
         "player_confidence": 0.7,
         "ball_confidence": 0.6,
         "shot_player_distance_px": 300,
+    },
+    "court_calibration": {
+        # Hand-placed court geometry for footage the keypoint model cannot read.
+        # See utils/court_calibration.py and tools/calibrate_court.py.
+        "dir": "calibration",
+        "mask_players": True,
+        # Off by default, and not an oversight. The court region is a FLOOR region, and
+        # the ball spends most of a rally above it: a lob or a serve toss leaves the
+        # polygon while being entirely in play. Turn it on only when the ball detector
+        # is actually being stolen by a neighbouring court, and check the drop count it
+        # reports afterwards.
+        "mask_ball": False,
+        "margin_beside_sideline_m": 3.0,
+        "margin_behind_far_baseline_m": 4.0,
+        "margin_behind_near_baseline_m": 8.0,
     },
     "shot_classifier": {
         "volley_distance_threshold": 40,
@@ -303,7 +337,9 @@ def save_stats(stats_df: pd.DataFrame, output_dir: str, logger: logging.Logger,
                rally_decoding: dict | None = None,
                shot_classification: dict | None = None,
                player_selection: dict | None = None,
-               ball: dict | None = None):
+               ball: dict | None = None,
+               court_source: str = "model",
+               court_calibration: dict | None = None):
     """Write full stats CSV + match-summary JSON to output_dir."""
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -337,6 +373,13 @@ def save_stats(stats_df: pd.DataFrame, output_dir: str, logger: logging.Logger,
         is_valid, support = court_fit
         summary["court_calibrated"] = bool(is_valid)
         summary["court_line_support"] = round(float(support), 3)
+        # Where the court geometry came from. A consumer cannot tell a hand-placed court
+        # from a predicted one by looking at the numbers, and the two carry different
+        # evidence: a predicted court passed the line-support gate, a hand-placed one
+        # was verified by a person and the gate was not applied to it.
+        summary["court_source"] = court_source
+        if court_calibration:
+            summary["court_calibration"] = court_calibration
         if court_detail:
             # Why it failed, not just that it did. A clip with cuts in it and a clip that
             # never shows a court both fail, and only one of them the user can fix.
@@ -346,6 +389,14 @@ def save_stats(stats_df: pd.DataFrame, output_dir: str, logger: logging.Logger,
                 "Court fit failed validation - speeds, distances and mini-court "
                 "positions are derived from an unreliable court and should not be "
                 "treated as measurements."
+            )
+        elif court_source == "manual":
+            summary["note"] = (
+                "Court geometry was placed by hand and the automatic line-support gate "
+                "was not applied. Distances and speeds are only as good as that "
+                "placement, and lens distortion is not corrected: see "
+                "court_calibration.lens_error_px for how far a single homography misses "
+                "the placed points."
             )
     if fps_support:
         # Whether this clip's frame rate is one the published accuracy numbers were
@@ -553,6 +604,96 @@ def main():
     else:
         logger.warning(f"  Frame rate: UNSUPPORTED. {fps_support.reason}")
 
+    # ── 1b. Hand-placed court calibration ──────────────────────────
+    # Resolved before any detector runs, because it settles two things at once: where
+    # the court is, and which of the people in frame are on it. A club video routinely
+    # shows the next court along, and the players there are real people playing real
+    # tennis that the detector is entirely right to find - nothing in the image says
+    # which court is the one being analysed, and only this file does.
+    cc_cfg = cfg.get("court_calibration", {})
+    frame_size = (video_frames[0].shape[1], video_frames[0].shape[0])
+    calibration = None
+    court_roi = None
+    exclusion_zones: list = []
+    calibration_report: dict | None = None
+
+    if args.no_court_calibration and args.court_calibration:
+        logger.error("--court-calibration and --no-court-calibration contradict each "
+                     "other. Pass one or the other.")
+        sys.exit(2)
+
+    if args.no_court_calibration:
+        logger.info("  Court calibration: disabled (--no-court-calibration)")
+    else:
+        requested = args.court_calibration
+        if requested and not Path(requested).exists():
+            logger.error(f"Court calibration not found: {requested}")
+            sys.exit(2)
+        path = Path(requested) if requested else find_calibration_for(
+            input_path, cc_cfg.get("dir", "calibration"))
+        if path is not None:
+            try:
+                loaded = CourtCalibration.load(path)
+                # A calibration replaces a gate rather than passing one, so a file that
+                # has been hand-edited into an impossible court has to be caught here.
+                problems = validate_geometry(loaded.keypoints)
+                if problems:
+                    raise ValueError("; ".join(problems))
+                calibration = loaded.scaled_to(frame_size)
+            except (ValueError, KeyError, OSError) as exc:
+                message = f"court calibration {path} is unusable: {exc}"
+                if requested:
+                    # Explicitly asked for. Falling back to the model would run a
+                    # different analysis from the one that was requested.
+                    logger.error(message[0].upper() + message[1:])
+                    sys.exit(2)
+                logger.warning(f"  Discovered {message}. Using the keypoint model.")
+                calibration = None
+
+    if calibration is not None:
+        residuals = reprojection_residuals(calibration.keypoints)
+        logger.info(f"  Court calibration: {calibration.source_path} "
+                    f"({len(calibration.clicked)} of 14 points placed by hand"
+                    f"{f', on {calibration.video} frame {calibration.frame_index}' if calibration.video else ''})")
+        logger.info(f"    Lens error against a single homography: median "
+                    f"{np.median(residuals):.1f}px, max {residuals.max():.1f}px")
+        if residuals.max() > 10:
+            logger.warning(
+                "    Above 10px, one homography is a visible compromise across these "
+                "points. That is lens distortion, not a bad placement: the points are "
+                "where the corners really appear and a pinhole model cannot pass through "
+                "all of them at once. Every position mapped through that homography - "
+                "mini-court dots, distances, speeds - carries the error, and MiniCourt's "
+                "RANSAC fit may discard the worst points outright."
+            )
+        exclusion_zones = calibration.exclusion_contours()
+        if exclusion_zones:
+            logger.info(f"    {len(exclusion_zones)} exclusion zone(s) marked by hand")
+        if cc_cfg.get("mask_players", True):
+            try:
+                court_roi = calibration.roi(
+                    frame_size=frame_size,
+                    beside_m=float(cc_cfg.get("margin_beside_sideline_m", 3.0)),
+                    behind_far_m=float(cc_cfg.get("margin_behind_far_baseline_m", 4.0)),
+                    behind_near_m=float(cc_cfg.get("margin_behind_near_baseline_m", 8.0)),
+                )
+            except ValueError as exc:
+                logger.warning(f"    Could not build a court region ({exc}). People off "
+                               f"this court will not be filtered out.")
+        calibration_report = {
+            "source": "manual",
+            "file": str(calibration.source_path),
+            "points_placed_by_hand": len(calibration.clicked),
+            "frame_index": calibration.frame_index,
+            "created_at": calibration.created_at,
+            "lens_error_px": {
+                "median": round(float(np.median(residuals)), 1),
+                "max": round(float(residuals.max()), 1),
+            },
+            "exclusion_zones": len(exclusion_zones),
+            "court_region_applied": court_roi is not None,
+        }
+
     # ── 2. Player detection ────────────────────────────────────────
     logger.info("[2/9] Player detection...")
     player_tracker = PlayerTracker(model_path=cfg["models"]["player"])
@@ -568,6 +709,35 @@ def main():
     )
     source = f"stub ({player_stub})" if use_player_stubs else "fresh YOLO"
     logger.info(f"  Source: {source}")
+
+    # Everyone standing somewhere this court is not. Applied after the stub is written,
+    # so the cache holds raw detections and changing a margin does not invalidate it.
+    # Counted BEFORE the filter: "people detected" means what the detector found, and
+    # reporting the post-filter number would make a clip crowded with a neighbouring
+    # court's match look like an empty one.
+    people_before = None
+    if calibration is not None and (court_roi is not None or exclusion_zones):
+        people_before = len({tid for frame in player_detections for tid in frame})
+        player_detections, player_mask = filter_detections(
+            player_detections, roi=court_roi, exclusions=exclusion_zones,
+            point_of=foot_point,
+        )
+        logger.info(
+            f"  Court region: dropped {player_mask['boxes_removed']} detection(s) off "
+            f"this court, removing {player_mask['tracks_removed_entirely']} of "
+            f"{people_before} tracked people entirely; "
+            f"{player_mask['tracks_kept']} remain"
+        )
+        if player_mask["tracks_kept"] < 2:
+            logger.warning(
+                f"  Only {player_mask['tracks_kept']} tracked person/people survived the "
+                f"court region. Either the calibration is on the wrong court, or the "
+                f"margins are too tight for this camera - widen "
+                f"court_calibration.margin_* in the config, or check the region drawn on "
+                f"the output video."
+            )
+        if calibration_report is not None:
+            calibration_report["players_filtered"] = player_mask
 
     # ── 3. Ball detection ──────────────────────────────────────────
     logger.info("[3/9] Ball detection...")
@@ -630,6 +800,23 @@ def main():
                 stub_path=cfg["io"]["ball_stub_path"],
             )
 
+    # The ball, where a neighbouring court is stealing the detector. Exclusion zones
+    # always apply; the court region only when asked, because that region is a FLOOR
+    # region and a ball in flight legitimately leaves it. Counted before the coverage
+    # figures below, so those describe what the rest of the run actually used.
+    if calibration is not None and (exclusion_zones or cc_cfg.get("mask_ball", False)):
+        ball_detections, ball_mask = filter_detections(
+            ball_detections,
+            roi=court_roi if cc_cfg.get("mask_ball", False) else None,
+            exclusions=exclusion_zones,
+            point_of=centre_point,
+        )
+        if ball_mask["boxes_removed"]:
+            logger.info(f"  Court region: dropped {ball_mask['boxes_removed']} ball "
+                        f"detection(s) outside this court")
+        if calibration_report is not None:
+            calibration_report["ball_filtered"] = ball_mask
+
     raw_detected = sum(1 for d in ball_detections if d.get(1))
     total = len(video_frames)
     logger.info(f"  Raw detections: {raw_detected}/{total} frames "
@@ -655,15 +842,25 @@ def main():
 
     # ── 4. Court line detection ────────────────────────────────────
     logger.info("[4/9] Court keypoint detection...")
-    court_detector = CourtLineDetector(cfg["models"]["court"])
+    court_detector = None
 
-    if cfg["pipeline"]["per_frame_keypoints"]:
+    if calibration is not None:
+        # A fixed camera's court is a property of the CAMERA, not of the frame: it does
+        # not move, so one hand-placed set describes every frame and the model has
+        # nothing left to infer. Skipping it also skips loading ResNet-50 onto the GPU.
+        court_keypoints = calibration.flat()
+        all_court_keypoints = [court_keypoints] * len(video_frames)
+        logger.info(f"  Hand-placed geometry from {calibration.source_path}; "
+                    f"the keypoint model was not run")
+    elif cfg["pipeline"]["per_frame_keypoints"]:
+        court_detector = CourtLineDetector(cfg["models"]["court"])
         logger.info("  Per-frame mode (camera-robust, slower)...")
         all_court_keypoints = court_detector.predict_all_frames(
             video_frames, smooth=True, window_size=5
         )
         court_keypoints = all_court_keypoints[0]
     else:
+        court_detector = CourtLineDetector(cfg["models"]["court"])
         logger.info("  Single-frame mode (fast)...")
         court_keypoints = court_detector.predict(video_frames[0])
         all_court_keypoints = [court_keypoints] * len(video_frames)
@@ -673,7 +870,33 @@ def main():
     court_valid, line_support, court_detail = assess_court_fit_detail(
         video_frames, all_court_keypoints)
     court_fit = (court_valid, line_support)
-    if court_valid:
+    court_source = "manual" if calibration is not None else "model"
+
+    if calibration is not None:
+        # The gate exists because a regression head cannot say "this camera angle is
+        # outside my training distribution". A human who placed these points on the
+        # lines and looked at the overlay has already answered that question, with
+        # better evidence than the gate has: line_support walks a STRAIGHT segment
+        # between two corners, and on a wide lens the painted line between them is
+        # curved, so a correct court scores low. The measurement is still taken and
+        # still reported - it is the only automatic check there is - but on a calibrated
+        # run it is evidence rather than a gate.
+        court_detail["gate_applied"] = False
+        court_detail["measured_line_support"] = round(float(line_support), 3)
+        court_detail["reason"] = (
+            f"Court geometry was placed by hand ({calibration.source_path}), so the "
+            f"automatic line-support gate does not apply and was not used to accept or "
+            f"refuse this clip. Measured support is {line_support:.3f} against a "
+            f"{MIN_LINE_SUPPORT} threshold; on a wide-angle lens a correct court scores "
+            f"below it, because the test samples straight segments between corners that "
+            f"the painted line does not follow. Verify the court drawn on the output "
+            f"video."
+        )
+        court_valid = True
+        court_fit = (True, line_support)
+        logger.info(f"  Court fit: hand-placed, gate not applied "
+                    f"(measured line support {line_support:.3f})")
+    elif court_valid:
         logger.info(f"  Court fit OK (line support {line_support:.3f})")
     else:
         logger.warning(
@@ -688,7 +911,8 @@ def main():
     logger.info("[5/9] Filtering to 2 main players...")
     # Shared with the evals (utils.player_selection) so they grade the same two players
     # the pipeline reports on, rather than every person YOLO found in the stands.
-    people_detected = len({tid for frame in player_detections for tid in frame})
+    people_detected = (people_before if people_before is not None
+                       else len({tid for frame in player_detections for tid in frame}))
     player_detections, player_id_map = select_two_players(
         player_tracker, player_detections, court_keypoints
     )
@@ -1485,6 +1709,8 @@ def main():
                        f"those frames are approximate."
                    )} if use_hom and approx_frames else {}),
                },
+               court_source=court_source,
+               court_calibration=calibration_report,
                fps_support=fps_support.as_dict(),
                rally_decoding=decode_diagnostics or None,
                player_selection=selection.as_dict(),
@@ -1523,7 +1749,19 @@ def main():
     output_frames = draw_player_stats(output_frames, stats_df, stats_params)
 
     logger.debug("  Drawing court keypoints...")
-    if cfg["pipeline"]["per_frame_keypoints"]:
+    if calibration is not None:
+        # The wireframe rather than loose dots. A hand-placed court is verified by eye
+        # and nothing else, so the output video has to make that verification possible
+        # at a glance: lines that follow the paint, and the region that decided which
+        # people were on this court.
+        output_frames = draw_court_on_video(
+            output_frames, court_keypoints, colour=(0, 220, 255), thickness=2)
+        for frame in output_frames:
+            if court_roi is not None:
+                draw_region(frame, court_roi, colour=(0, 200, 0), thickness=1)
+            for zone in exclusion_zones:
+                draw_region(frame, zone, colour=(0, 0, 255), thickness=2)
+    elif cfg["pipeline"]["per_frame_keypoints"]:
         output_frames = court_detector.draw_keypoints_on_video_dynamic(
             output_frames, all_court_keypoints, point_color=(0, 140, 255), radius=5
         )
