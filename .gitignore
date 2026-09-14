@@ -99,6 +99,10 @@ tracknet_eval_debug.txt
 # Patch files exported while moving work between machines.
 /*.patch
 
+# tools/segment_points.py output: the default <video name>_points/ directory it
+# writes cut clips and manifest.json into. Generated, and often hundreds of MB.
+*_points/
+
 # Personal prep / private notes (never commit)
 prep_james/
 image.png

@@ -39,6 +39,18 @@ default - fast, and may start a little EARLY because a stream copy can only cut 
 keyframe, never late), plus a manifest.json recording exactly what was kept, on what
 basis, and the activity score at every cut - so a run that kept too little or too much
 is auditable rather than a black box.
+
+A source outside 23-31fps (see utils/fps_support.py - every published accuracy number
+in this project was measured inside that band) can be resampled during the same cut:
+
+    python tools/segment_points.py session.mp4 --target-fps          # -> 30fps
+    python tools/segment_points.py session.mp4 --target-fps 25
+
+This implies --reencode, since a stream copy cannot change frame rate - only decode and
+re-encode can. Each extracted clip's ACTUAL output rate is then verified with ffprobe
+and classified with the pipeline's own fps gate, rather than trusted on the strength of
+having asked ffmpeg for it: recorded per segment in the manifest as `fps_actual` and
+`fps_support`.
 """
 from __future__ import annotations
 
@@ -67,6 +79,7 @@ from utils.activity_segments import (                        # noqa: E402
     smooth,
 )
 from utils.court_calibration import CourtCalibration, find_calibration_for  # noqa: E402
+from utils.fps_support import assess_fps                    # noqa: E402
 
 
 def _resolve_calibration(video: str, explicit: str | None, disabled: bool):
@@ -148,14 +161,38 @@ def _save_plot(signal: np.ndarray, fps: float, threshold: float, segments, path:
     cv2.imwrite(str(path), canvas)
 
 
-def _extract_segment(video: str, seg, out_path: Path, reencode: bool) -> tuple[bool, str]:
+def resolve_reencode(target_fps: float | None, reencode: bool) -> tuple[bool, bool]:
+    """
+    Whether extraction should re-encode, and whether that was forced by --target-fps.
+
+    A stream copy carries the source's frames through byte for byte - there is no way to
+    ask it for a different rate, only decode-and-re-encode can change that. Forcing
+    re-encode on rather than refusing the flag combination, because the request
+    ("resample to this fps") is unambiguous; the caller is expected to print that this
+    happened, matching --fast's own precedent of one flag implying config changes in
+    main.py, rather than letting it happen silently.
+    """
+    if target_fps and not reencode:
+        return True, True
+    return reencode, False
+
+
+def _extract_segment(
+    video: str, seg, out_path: Path, reencode: bool, target_fps: float | None = None,
+) -> tuple[bool, str]:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     duration = max(seg.duration_s, 1.0 / 30)
     if reencode:
         cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-              "-ss", f"{seg.start_s:.3f}", "-i", video, "-t", f"{duration:.3f}",
-              "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
-              "-c:a", "aac", str(out_path)]
+              "-ss", f"{seg.start_s:.3f}", "-i", video, "-t", f"{duration:.3f}"]
+        if target_fps:
+            # -fps_mode cfr (replaces the deprecated -vsync) forces a constant output
+            # rate by dropping or duplicating frames against real timestamps, rather
+            # than leaving that decision to ffmpeg's default - which one it picks is
+            # not something this tool should depend on unstated.
+            cmd += ["-r", f"{target_fps:g}", "-fps_mode", "cfr"]
+        cmd += ["-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
+               "-c:a", "aac", str(out_path)]
     else:
         # -ss before -i seeks to the nearest keyframe AT OR BEFORE the requested start,
         # so a stream copy can only start a little EARLY, never late - the safe
@@ -168,6 +205,31 @@ def _extract_segment(video: str, seg, out_path: Path, reencode: bool) -> tuple[b
     if not out_path.exists():
         return False, (result.stderr or "unknown ffmpeg error").strip()[:300]
     return True, ""
+
+
+def _probe_output_fps(path: Path) -> float | None:
+    """
+    The rate a written clip actually plays at, not the rate it was asked for.
+
+    ffmpeg accepting a `-r` request is not proof it did what was asked - this checks the
+    file it actually wrote, with the same tool (ffprobe) and the same r_frame_rate field
+    a human would check by hand, rather than trusting the encode step silently.
+    """
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=r_frame_rate", "-of",
+         "default=noprint_wrappers=1:nokey=1", str(path)],
+        capture_output=True, text=True,
+    )
+    text = (result.stdout or "").strip()
+    if "/" not in text:
+        return None
+    num, _, den = text.partition("/")
+    try:
+        num_f, den_f = float(num), float(den)
+    except ValueError:
+        return None
+    return num_f / den_f if den_f else None
 
 
 def main() -> int:
@@ -214,6 +276,14 @@ def main() -> int:
                         help="re-encode each cut for a frame-accurate boundary instead "
                              "of a fast stream copy (slower; stream copy can only start "
                              "a little early, never late, which is the safe direction)")
+    parser.add_argument("--target-fps", type=float, nargs="?", const=30.0, default=None,
+                        metavar="FPS",
+                        help="resample each extracted clip to this rate (bare "
+                             "--target-fps means 30, the rate every published accuracy "
+                             "number in this project was measured at). Implies "
+                             "--reencode - a stream copy cannot change frame rate. Every "
+                             "clip's ACTUAL output rate is then verified with ffprobe, "
+                             "not assumed from having asked for it.")
     parser.add_argument("--dry-run", action="store_true",
                         help="compute the manifest and print the summary, but do not "
                              "extract any clips")
@@ -233,6 +303,15 @@ def main() -> int:
         print("error: ffmpeg not found on PATH. Install it, or pass --dry-run to only "
               "compute the manifest.", file=sys.stderr)
         return 2
+    args.reencode, forced = resolve_reencode(args.target_fps, args.reencode)
+    if forced:
+        print(f"  --target-fps {args.target_fps:g} implies --reencode (a stream copy "
+             f"cannot change frame rate) - enabling it")
+    if args.target_fps is not None and not args.dry_run:
+        if shutil.which("ffprobe") is None:
+            print("error: ffprobe not found on PATH (it ships with ffmpeg). Needed to "
+                 "verify --target-fps actually took effect.", file=sys.stderr)
+            return 2
 
     calibration, calibration_source = _resolve_calibration(
         args.video, args.calibration, args.no_calibration)
@@ -264,6 +343,12 @@ def main() -> int:
     mask = build_roi_mask(roi_polygon, (width, height), args.downscale)
 
     print(f"{args.video}: {total_frames or '?'} frames at {width}x{height}, {fps:g}fps")
+    source_support = assess_fps(fps)
+    if not source_support.is_supported:
+        print(f"  source rate: {source_support.status} - {source_support.reason}")
+        if not args.target_fps:
+            print("    pass --target-fps to resample the extracted clips into the "
+                 "supported band before analysing them")
     if calibration_source:
         print(f"  restricted to the court in {calibration_source}")
     print(f"  scanning at 1/{args.downscale} resolution "
@@ -307,8 +392,10 @@ def main() -> int:
     manifest = {
         "video": str(args.video),
         "video_fps": round(fps, 3),
+        "video_fps_support": source_support.as_dict(),
         "video_frames": len(signal),
         "video_duration_s": round(total_duration, 3),
+        "target_fps": args.target_fps,
         "calibration_source": calibration_source,
         "parameters": {
             "downscale": args.downscale,
@@ -348,9 +435,11 @@ def main() -> int:
         print(f"\n  extracting {len(segments)} clip(s) to {out_dir}/ "
              f"({'re-encoding' if args.reencode else 'stream copy'})...")
         failures = 0
+        fps_mismatches = 0
         for i, seg in enumerate(segments):
             name = f"{stem}_{i:03d}.mp4"
-            ok, error = _extract_segment(args.video, seg, out_dir / name, args.reencode)
+            ok, error = _extract_segment(
+                args.video, seg, out_dir / name, args.reencode, args.target_fps)
             record = seg.as_dict()
             record["index"] = i
             record["file"] = name if ok else None
@@ -358,9 +447,23 @@ def main() -> int:
                 failures += 1
                 record["error"] = error
                 print(f"    {i:3d}  FAILED: {error}")
+            elif args.target_fps:
+                # Verified against the file that was actually written, with the same
+                # tool (ffprobe) and field a human would check by hand - "ffmpeg did
+                # not error" is not the same claim as "the clip is now 30fps".
+                actual = _probe_output_fps(out_dir / name)
+                record["fps_actual"] = round(actual, 3) if actual else None
+                record["fps_support"] = assess_fps(actual).as_dict()
+                if actual is None or abs(actual - args.target_fps) > 0.5:
+                    fps_mismatches += 1
+                    print(f"    {i:3d}  fps mismatch: asked for {args.target_fps:g}, "
+                         f"measured {actual}")
             manifest["segments"].append(record)
         if failures:
             print(f"\n  {failures} of {len(segments)} clip(s) failed - see manifest.json")
+        if fps_mismatches:
+            print(f"\n  {fps_mismatches} of {len(segments)} clip(s) did not land at the "
+                 f"requested rate - see manifest.json before trusting these")
 
     if args.dry_run or not segments:
         manifest["segments"] = [

@@ -118,6 +118,14 @@ first run. Every cut is also recorded in `manifest.json` - which frames, what th
 activity score was there, on what parameters - so a run that kept too little or too much
 is auditable rather than a black box.
 
+A source outside 23 to 31fps - the band every published accuracy number in this project
+was measured on, see the frame-rate section below - can be resampled during the same
+cut: `--target-fps` (bare, means 30) implies `--reencode`, since a stream copy cannot
+change frame rate. Each clip's ACTUAL rate is then verified with `ffprobe` and recorded
+per segment in `manifest.json` as `fps_actual` and `fps_support` - not assumed from
+having asked ffmpeg for it. Verified on a real 60fps clip: resampled to exactly 30/1 with
+no mismatches reported.
+
 The calibration is written to `calibration/<video name>.json` and discovered by video
 name. One camera position, many recordings: point later clips at the same file rather
 than redoing the clicks.
@@ -580,7 +588,7 @@ on for repeated runs against the same clip.
 
 ### Test suite
 
-**499 unit and integration tests** (`pytest tests/`), covering ball-state classification,
+**510 unit and integration tests** (`pytest tests/`), covering ball-state classification,
 Kalman and RTS smoothing including the physical speed-plausibility gate, mini-court
 coordinate mapping, trajectory drawing, pose-based shot classification, the hit and bounce
 classifier and its feature contract, the rally grammar and its decoder, the no-ground-truth
@@ -911,8 +919,8 @@ Ordered by measured value, not by interest.
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/                                       # 499 tests, needs the weights
-pytest tests/ -m "not slow"                         # 498, what CI runs, no weights
+pytest tests/                                       # 510 tests, needs the weights
+pytest tests/ -m "not slow"                         # 509, what CI runs, no weights
 
 python eval/shot_frame_accuracy.py                  # reference clip, ships with repo
 python eval/speed_accuracy.py                       # reference clip, ships with repo
@@ -942,7 +950,7 @@ mini_visual_court/    mini-court mapping and trajectory drawing
 models/               small trained weights (committed); large weights fetched by script
 notes/                CV concept write-ups
 scripts/              download_models.py, build_clip_suite.py
-tests/                499 unit and integration tests
+tests/                510 unit and integration tests
 tools/                calibrate_court.py, segment_points.py, label_shots.py,
                       diagnose_court.py
 trackers/             tracknet_ball_tracker.py, player_tracker.py

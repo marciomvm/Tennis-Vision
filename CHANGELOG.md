@@ -41,6 +41,31 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   overlapping - fixed by capping both at the gap's midpoint instead of at each other's
   raw edge). 473 to 499.
 
+### Added (2)
+
+- **`tennis-vision segment --target-fps` resamples an out-of-range clip during the same
+  cut.** `test.mp4` in the reference footage is a genuine constant 60fps source (verified
+  with `ffprobe`: `r_frame_rate` and `avg_frame_rate` both exactly `60/1`), far outside
+  the 23-31fps band every published accuracy number here was measured on. Bare
+  `--target-fps` means 30; it implies `--reencode`, since a stream copy carries frames
+  through unchanged and only a decode-and-re-encode pass can change their rate - forced
+  on rather than refused, and reported when it happens rather than silently, matching
+  `--fast`'s own precedent of one flag implying a config change in `main.py`.
+
+  Every extracted clip's ACTUAL rate is verified afterwards with `ffprobe` against the
+  file that was actually written, not assumed from ffmpeg exiting 0, and classified with
+  the pipeline's own `utils.fps_support.assess_fps` - the existing gate, not a new
+  threshold invented for this. Recorded per segment in `manifest.json` as `fps_actual`
+  and `fps_support`.
+
+  Verified against a real 12-second slice of `test.mp4`: the source was correctly
+  classified unsupported at 60.0fps, the extracted clip landed at exactly 30/1 confirmed
+  independently with a second, unrelated `ffprobe` call, and its frame count (229 over
+  7.6s) matched 30fps exactly. 11 tests added, two of them a real ffmpeg round trip
+  rather than a mocked one - a flag-ordering mistake in the `-r`/`-fps_mode` command
+  would exit 0 and pass a mocked test while producing an unchanged 60fps file. 499 to
+  510.
+
 ### Changed
 
 - **Hand-placed court geometry, for footage the keypoint model cannot read.**
