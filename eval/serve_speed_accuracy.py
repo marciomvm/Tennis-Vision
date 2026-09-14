@@ -1,6 +1,6 @@
 """
 eval/serve_speed_accuracy.py
-────────────────────────────
+----------------------------
 Measures serve speed against real broadcast radar ground truth.
 
 Where the ground truth comes from

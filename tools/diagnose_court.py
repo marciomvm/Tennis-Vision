@@ -144,8 +144,12 @@ def sample_points(frame, kp, a, b):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    # __doc__ is drawn with box characters and argparse writes help to a cp1252 console
+    # on Windows, so --help died with a UnicodeEncodeError before printing anything.
+    ap = argparse.ArgumentParser(
+        description=("Say WHICH court line failed a clip's fit, and whether the "
+                     "line-support gate can work on this footage at all."),
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("video")
     ap.add_argument("--frames", type=int, default=6, help="frames to sample (default 6)")
     ap.add_argument("--model", default="models/keypoints_model_geoaug.pth")

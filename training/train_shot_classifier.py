@@ -1,6 +1,6 @@
 """
 training/train_shot_classifier.py
-─────────────────────────────────
+---------------------------------
 Trains ONE temporal model over pose sequences to classify all shot types, replacing
 the pile of hand-written geometric rules in ShotClassifier.
 

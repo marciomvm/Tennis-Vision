@@ -1,6 +1,6 @@
 """
 eval/bounce_candidate_recall.py
-───────────────────────────────
+-------------------------------
 Measures how many real bounces the candidate generators actually propose.
 
 Why recall is the metric that matters here

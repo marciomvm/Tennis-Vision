@@ -1,6 +1,6 @@
 """
 scripts/build_clip_suite.py
-───────────────────────────
+---------------------------
 Builds the evaluation clip suite from a manifest of public match videos.
 
 Why a script and not a folder of files

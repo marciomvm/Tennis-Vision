@@ -1,6 +1,6 @@
 """
 training/train_court_keypoints.py
-─────────────────────────────────
+---------------------------------
 Fine-tunes the court keypoint model with GEOMETRIC augmentation.
 
 Why geometric specifically

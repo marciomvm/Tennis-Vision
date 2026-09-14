@@ -1,6 +1,6 @@
 """
 eval/court_validity_calibration.py
-──────────────────────────────────
+----------------------------------
 Measures court-fit quality across the eval clip suite so the validity threshold is
 picked from data rather than guessed.
 

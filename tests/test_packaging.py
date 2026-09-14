@@ -220,7 +220,9 @@ def test_documented_gdown_command_matches_the_installed_gdown():
 
 
 def test_output_directories_are_created_from_nothing(tmp_path):
-    """
+    # Raw, because the docstring quotes a Windows path: 'output\stats' is an invalid
+    # escape and warned on every single run of the suite.
+    r"""
     A fresh clone has no output/ directory: it is gitignored, so it exists on every
     developer machine and on no user's.
 
@@ -259,7 +261,7 @@ def test_no_mkdir_forgets_its_parents():
     bad = "mkdir(" + "exist_ok=True)"
     offenders = []
     for path in REPO.rglob("*.py"):
-        if any(part in {"venv", ".git", "build", "dist"} for part in path.parts):
+        if any(part in {"venv", ".venv", ".git", "build", "dist"} for part in path.parts):
             continue
         if path.name == "test_packaging.py":
             continue
@@ -269,4 +271,62 @@ def test_no_mkdir_forgets_its_parents():
     assert not offenders, (
         "mkdir(exist_ok=True) does not create parent directories. Use "
         "mkdir(parents=True, exist_ok=True):\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_argparse_help_text_is_ascii():
+    """
+    A --help that cannot be printed is a --help that does not exist.
+
+    The house style rules a docstring off with U+2500 box characters, and several scripts
+    pass that docstring straight to argparse as the description. argparse writes help to
+    the console, which is cp1252 on a default Windows install, so `--help` on nine of
+    this repository's own documented commands raised UnicodeEncodeError before printing a
+    single line - including the eval scripts the README tells people to run.
+
+    The fix is per script (an ASCII rule in the docstring, or a purpose-written
+    description), so nothing here constrains the style of a docstring that is only ever
+    read in a file.
+    """
+    import ast
+    import re
+
+    offenders = []
+    for path in REPO.rglob("*.py"):
+        if any(part in {"venv", ".venv", ".git", "build", "dist"} for part in path.parts):
+            continue
+        source = path.read_text(encoding="utf-8")
+        if not re.search(r"description\s*=\s*__doc__\s*[,)]", source):
+            continue
+        docstring = ast.get_docstring(ast.parse(source)) or ""
+        exotic = sorted({c for c in docstring if ord(c) > 127})
+        if exotic:
+            offenders.append(f"{path.relative_to(REPO)}: {' '.join(exotic)}")
+
+    assert not offenders, (
+        "these pass a non-ASCII docstring to argparse as help text, which raises "
+        "UnicodeEncodeError on a cp1252 console:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_a_subcommands_own_help_is_reachable():
+    """
+    `tennis-vision --help` promises "Run 'tennis-vision <command> --help' for
+    command-specific options" and that did not work: the top-level parser's own -h
+    matched first, so every subcommand's --help printed the top-level help instead. The
+    flags of a subcommand are the only place some features are documented, so this made
+    them undiscoverable from the tool itself.
+    """
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "cli.py", "analyze", "--help"],
+        capture_output=True, text=True, cwd=REPO, timeout=120,
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "tennis-vision analyze" in result.stdout
+    assert "--court-calibration" in result.stdout, (
+        "analyze's own flags must appear, not the top-level command list"
     )

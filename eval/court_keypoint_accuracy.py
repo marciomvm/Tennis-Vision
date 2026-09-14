@@ -1,6 +1,6 @@
 """
 eval/court_keypoint_accuracy.py
-───────────────────────────────
+-------------------------------
 First real measurement of court keypoint accuracy - the component the README has
 always listed as "unmeasured".
 
