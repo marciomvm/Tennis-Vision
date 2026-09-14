@@ -9,6 +9,7 @@ so there is exactly one code path per capability and the CLI cannot drift from w
 
     tennis-vision analyze clip.mp4 -o output/run.avi
     tennis-vision calibrate clip.mp4
+    tennis-vision segment session.mp4
     tennis-vision download-models
     tennis-vision version
 """
@@ -95,6 +96,19 @@ def _cmd_calibrate(argv: list[str]) -> int:
         sys.argv = original_argv
 
 
+def _cmd_segment(argv: list[str]) -> int:
+    """Cut the dead time out of a long recording before analysing it."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from tools import segment_points
+
+    original_argv = sys.argv
+    try:
+        sys.argv = ["segment_points.py", *argv]
+        return segment_points.main()
+    finally:
+        sys.argv = original_argv
+
+
 def _cmd_download_models(argv: list[str]) -> int:
     """Fetch model weights into models/."""
     argparse.ArgumentParser(
@@ -115,7 +129,7 @@ def main() -> int:
         epilog="Run 'tennis-vision <command> --help' for command-specific options.",
     )
     parser.add_argument("command", nargs="?", default="help",
-                        choices=["analyze", "calibrate", "download-models",
+                        choices=["analyze", "calibrate", "segment", "download-models",
                                  "version", "help"],
                         help="what to do")
 
@@ -127,6 +141,7 @@ def main() -> int:
     subcommands = {
         "analyze": _cmd_analyze,
         "calibrate": _cmd_calibrate,
+        "segment": _cmd_segment,
         "download-models": _cmd_download_models,
     }
     argv = sys.argv[1:]

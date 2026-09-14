@@ -15,6 +15,34 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Cut the dead time out of a long recording before analysing it.**
+  `tennis-vision segment session.mp4` (`tools/segment_points.py`,
+  `utils/activity_segments.py`) streams the video once, computes frame-differencing
+  activity restricted to the calibrated court at reduced resolution, and keeps only the
+  stretches with motion. No model, no GPU: about 150 frames/second on a single core, so
+  an hour of 30fps footage costs roughly 12 minutes to scan against the ~100 minutes the
+  ball tracker alone would need for the same hour.
+
+  It is a coarse pre-filter, not a rally detector - a real rally is a burst of motion per
+  stroke with the ball's flight time as a lull in between, so nearby bursts are merged
+  with a generous gap tolerance rather than each becoming its own clip. Verified on the
+  reference clip: default settings recovered 10 segments covering 68% of the footage,
+  correctly separating a 16-second genuine pause from the rally either side of it.
+
+  Each retained window is written as its own clip (stream-copied by default, `--reencode`
+  for a frame-accurate cut) alongside a `manifest.json` recording every cut, the
+  parameters used and the activity score at each boundary - a run that kept too little or
+  too much is auditable rather than a black box. `--dry-run` computes the manifest without
+  extracting anything; `--plot` saves a PNG of the activity trace against the threshold.
+
+  26 tests added, all against synthetic signals rather than real video: the ordering of
+  merge, duration-filter-before-padding, and the neighbour-overlap bug that ordering was
+  written to prevent (two segments independently padding into the same gap and
+  overlapping - fixed by capping both at the gap's midpoint instead of at each other's
+  raw edge). 473 to 499.
+
+### Changed
+
 - **Hand-placed court geometry, for footage the keypoint model cannot read.**
   `tools/calibrate_court.py` places the fourteen court points once per camera position;
   `utils/court_calibration.py` stores them, refuses a set that does not describe a court,

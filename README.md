@@ -89,6 +89,35 @@ usually the best answer available.
 If the window opens larger than your screen, pass `--max-size 1280x720`. It is fitted to
 the detected screen size by default and cannot be resized once open.
 
+## A long recording
+
+A club session is filmed as one continuous take, an hour of tape for maybe fifteen
+minutes of actual rallies. Every detector in this pipeline costs the same per frame
+whether the frame shows a rally or an empty court, so cut the dead time out first:
+
+```bash
+tennis-vision segment session.mp4
+```
+
+This is frame differencing restricted to the calibrated court, at reduced resolution -
+no model, no GPU. Measured on one reference clip: about 150 frames/second on a single
+core, so an hour of 30fps footage costs roughly 12 minutes to scan, against the ~100
+minutes the ball tracker alone needs for the same hour. It finds motion, not points: a
+rally is a burst per stroke with the ball's flight time as a lull in between, so nearby
+bursts are merged with a generous gap tolerance (`--min-gap-s`, default 2s) rather than
+each becoming its own clip. What survives is a coarse cut - whole rallies with their own
+pauses intact, several-second stretches of nothing dropped - not point-perfect
+boundaries. If those matter, run `tennis-vision analyze` on what this keeps, which is
+now a small fraction of the original recording.
+
+Without a calibration for this camera, motion on a neighbouring court counts too; pass
+`--no-calibration` to acknowledge that deliberately, or calibrate first. `--dry-run`
+computes the manifest and prints the summary without cutting anything, and `--plot`
+saves a PNG of the activity trace against the threshold, worth a look before trusting a
+first run. Every cut is also recorded in `manifest.json` - which frames, what the
+activity score was there, on what parameters - so a run that kept too little or too much
+is auditable rather than a black box.
+
 The calibration is written to `calibration/<video name>.json` and discovered by video
 name. One camera position, many recordings: point later clips at the same file rather
 than redoing the clicks.
@@ -551,7 +580,7 @@ on for repeated runs against the same clip.
 
 ### Test suite
 
-**473 unit and integration tests** (`pytest tests/`), covering ball-state classification,
+**499 unit and integration tests** (`pytest tests/`), covering ball-state classification,
 Kalman and RTS smoothing including the physical speed-plausibility gate, mini-court
 coordinate mapping, trajectory drawing, pose-based shot classification, the hit and bounce
 classifier and its feature contract, the rally grammar and its decoder, the no-ground-truth
@@ -882,8 +911,8 @@ Ordered by measured value, not by interest.
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/                                       # 473 tests, needs the weights
-pytest tests/ -m "not slow"                         # 472, what CI runs, no weights
+pytest tests/                                       # 499 tests, needs the weights
+pytest tests/ -m "not slow"                         # 498, what CI runs, no weights
 
 python eval/shot_frame_accuracy.py                  # reference clip, ships with repo
 python eval/speed_accuracy.py                       # reference clip, ships with repo
@@ -913,13 +942,15 @@ mini_visual_court/    mini-court mapping and trajectory drawing
 models/               small trained weights (committed); large weights fetched by script
 notes/                CV concept write-ups
 scripts/              download_models.py, build_clip_suite.py
-tests/                473 unit and integration tests
-tools/                calibrate_court.py, label_shots.py, diagnose_court.py
+tests/                499 unit and integration tests
+tools/                calibrate_court.py, segment_points.py, label_shots.py,
+                      diagnose_court.py
 trackers/             tracknet_ball_tracker.py, player_tracker.py
 training/             court keypoint and shot classifier training
-utils/                ball_state, court_calibration, court_validity,
-                      hit_bounce_classifier, kalman_smoother, serve_detector,
-                      serve_landing, trajectory_3d, viewer_3d, and more
+utils/                activity_segments, ball_state, court_calibration,
+                      court_validity, hit_bounce_classifier, kalman_smoother,
+                      serve_detector, serve_landing, trajectory_3d, viewer_3d,
+                      and more
 main.py               pipeline entry point
 cli.py                tennis-vision command
 ```
