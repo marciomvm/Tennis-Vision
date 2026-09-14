@@ -647,7 +647,7 @@ on for repeated runs against the same clip.
 
 ### Test suite
 
-**545 unit and integration tests** (`pytest tests/`), covering ball-state classification,
+**547 unit and integration tests** (`pytest tests/`), covering ball-state classification,
 Kalman and RTS smoothing including the physical speed-plausibility gate, mini-court
 coordinate mapping, trajectory drawing, pose-based shot classification, the hit and bounce
 classifier and its feature contract, the rally grammar and its decoder, the no-ground-truth
@@ -978,8 +978,8 @@ Ordered by measured value, not by interest.
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/                                       # 545 tests, needs the weights
-pytest tests/ -m "not slow"                         # 542, what CI runs, no weights
+pytest tests/                                       # 547 tests, needs the weights
+pytest tests/ -m "not slow"                         # 544, what CI runs, no weights
 
 python eval/shot_frame_accuracy.py                  # reference clip, ships with repo
 python eval/speed_accuracy.py                       # reference clip, ships with repo
@@ -1009,7 +1009,7 @@ mini_visual_court/    mini-court mapping and trajectory drawing
 models/               small trained weights (committed); large weights fetched by script
 notes/                CV concept write-ups
 scripts/              download_models.py, build_clip_suite.py
-tests/                545 unit and integration tests
+tests/                547 unit and integration tests
 tools/                calibrate_court.py, segment_points.py, batch_analyze.py,
                       label_shots.py, diagnose_court.py
 trackers/             tracknet_ball_tracker.py, player_tracker.py

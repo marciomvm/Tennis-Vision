@@ -104,6 +104,15 @@ def _resolve_clips(input_path: Path) -> tuple[list[Path], dict | None]:
     return sorted(input_path.glob("*.mp4")), None
 
 
+def split_missing(clips: list[Path]) -> tuple[list[Path], list[Path]]:
+    """(clips that exist, clips that do not) - separated so a manifest entry whose file
+    was since deleted by hand is caught in one cheap check, before a full subprocess
+    spin-up (Python start, argument parsing, model loading) only to fail on file open."""
+    present = [c for c in clips if c.exists()]
+    missing = [c for c in clips if not c.exists()]
+    return present, missing
+
+
 def _segment_context(manifest: dict | None, clip: Path) -> dict:
     """start_s/end_s in the ORIGINAL recording, from the manifest, for traceability."""
     if manifest is None:
@@ -409,6 +418,16 @@ def main() -> int:
         print(f"error: no clips found under {args.input} (looked for manifest.json "
              f"and *.mp4)", file=sys.stderr)
         return 2
+
+    clips, missing = split_missing(clips)
+    if missing:
+        print(f"  {len(missing)} clip(s) listed in the manifest are missing on disk, "
+             f"skipped without running: {', '.join(c.name for c in missing)}")
+    if not clips:
+        print(f"error: every clip listed under {args.input} is missing on disk",
+              file=sys.stderr)
+        return 2
+
     if args.limit:
         clips = clips[:args.limit]
 
@@ -430,7 +449,10 @@ def main() -> int:
 
     out_dir.mkdir(parents=True, exist_ok=True)
     records: list[dict] = []
-    failures: list[dict] = []
+    failures: list[dict] = [
+        {"clip": c.name, "error": "listed in the manifest but missing on disk"}
+        for c in missing
+    ]
     t0 = time.time()
 
     for i, clip in enumerate(clips):

@@ -385,3 +385,27 @@ def test_combine_videos_real_ffmpeg_round_trip(tmp_path):
     # Re-encoding can shift the count by a frame or two; it must not be close to
     # either clip ALONE, which is what "only one clip made it in" would look like.
     assert frame_count >= 30
+
+
+# ── missing clips: a manifest entry whose file was deleted by hand ────────────
+
+def test_split_missing_separates_present_from_absent(tmp_path):
+    from tools.batch_analyze import split_missing
+
+    present_file = tmp_path / "a.mp4"
+    present_file.touch()
+    absent_file = tmp_path / "b.mp4"
+
+    present, missing = split_missing([present_file, absent_file])
+    assert present == [present_file]
+    assert missing == [absent_file]
+
+
+def test_split_missing_with_nothing_missing():
+    from tools.batch_analyze import split_missing
+    from pathlib import Path
+
+    existing = [Path(__file__)]   # this test file itself, guaranteed to exist
+    present, missing = split_missing(existing)
+    assert present == existing
+    assert missing == []

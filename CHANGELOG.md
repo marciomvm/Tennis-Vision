@@ -153,6 +153,16 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   clips and checks the frame count reflects both rather than only one making it in.
   533 to 545.
 
+### Added (5)
+
+- **A manifest entry whose clip was deleted no longer costs a full subprocess
+  spin-up to discover.** Found on a real batch: a user deleted `asd_points/asd_000.mp4`
+  (pre-match footage, not a rally) after `segment_points` had already written it into
+  `manifest.json`. `split_missing` checks which listed clips still exist on disk once,
+  before any of them run, rather than letting each absent one fail inside `main.py`
+  after Python has started, arguments were parsed, and model loading had begun. 2 tests
+  added. 545 to 547.
+
 ### Changed
 ### Changed
 
