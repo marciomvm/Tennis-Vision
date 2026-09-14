@@ -9,6 +9,7 @@ so there is exactly one code path per capability and the CLI cannot drift from w
 
     tennis-vision analyze clip.mp4 -o output/run.avi
     tennis-vision calibrate clip.mp4
+    tennis-vision calibrate-lens checkerboard.mp4 --pattern 9x6
     tennis-vision segment session.mp4
     tennis-vision batch-analyze session_points/ --court-calibration calibration/c.json
     tennis-vision download-models
@@ -104,6 +105,19 @@ def _cmd_calibrate(argv: list[str]) -> int:
         sys.argv = original_argv
 
 
+def _cmd_calibrate_lens(argv: list[str]) -> int:
+    """Measure a camera's lens distortion from a checkerboard."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from tools import calibrate_lens
+
+    original_argv = sys.argv
+    try:
+        sys.argv = ["calibrate_lens.py", *argv]
+        return calibrate_lens.main()
+    finally:
+        sys.argv = original_argv
+
+
 def _cmd_segment(argv: list[str]) -> int:
     """Cut the dead time out of a long recording before analysing it."""
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -150,8 +164,8 @@ def main() -> int:
         epilog="Run 'tennis-vision <command> --help' for command-specific options.",
     )
     parser.add_argument("command", nargs="?", default="help",
-                        choices=["analyze", "calibrate", "segment", "batch-analyze",
-                                 "download-models", "version", "help"],
+                        choices=["analyze", "calibrate", "calibrate-lens", "segment",
+                                 "batch-analyze", "download-models", "version", "help"],
                         help="what to do")
 
     # Dispatch off sys.argv BEFORE argparse sees it, so that a -h after a subcommand
@@ -162,6 +176,7 @@ def main() -> int:
     subcommands = {
         "analyze": _cmd_analyze,
         "calibrate": _cmd_calibrate,
+        "calibrate-lens": _cmd_calibrate_lens,
         "segment": _cmd_segment,
         "batch-analyze": _cmd_batch_analyze,
         "download-models": _cmd_download_models,

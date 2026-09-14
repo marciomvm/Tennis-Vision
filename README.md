@@ -89,6 +89,38 @@ usually the best answer available.
 If the window opens larger than your screen, pass `--max-size 1280x720`. It is fitted to
 the detected screen size by default and cannot be resized once open.
 
+## The camera's own lens
+
+A homography assumes straight lines project to straight lines, and the wide action
+cameras this has been tested against so far do not honour that - a painted line that is
+straight on the court visibly bows in the frame. `court_calibration.lens_error_px`
+already measures the cost of that; this measures the lens itself, so a later change can
+correct it.
+
+```bash
+tennis-vision calibrate-lens checkerboard.mp4 --pattern 9x6
+```
+
+Film a real checkerboard (a common size is 9x6 inner corners - the points where four
+squares meet, not the outer edge, on a 10x7-square board) with the SAME camera, lens
+setting and resolution as the tennis footage. Move it so it visibly sweeps the edges and
+corners of the frame, not just the centre - distortion is smallest in the middle and
+largest at the edges, which a few centred photos would fail to measure at all; the tool
+warns when coverage is too narrow to trust.
+
+Fits both lens models OpenCV offers - the standard polynomial one and the fisheye one -
+from the same detected corners, rather than assuming a "wide" action-camera lens is a
+true fisheye. Whichever measures the lower reprojection error is kept, and both figures
+are saved for audit. Verified against synthetic checkerboard photos rendered with a
+known camera and known distortion baked in: recovered focal length within 0.1% and
+distortion coefficients within a few percent of the true values from photos alone, no
+point correspondences handed to it directly - the same path a real checkerboard photo
+takes.
+
+This measures the lens. It does not correct anything in the pipeline yet - see
+`utils/lens_calibration.py`'s module docstring for why that is a separate, later change
+with a real "wrong number in metres, silently" failure mode of its own.
+
 ## A long recording
 
 A club session is filmed as one continuous take, an hour of tape for maybe fifteen
@@ -647,7 +679,7 @@ on for repeated runs against the same clip.
 
 ### Test suite
 
-**547 unit and integration tests** (`pytest tests/`), covering ball-state classification,
+**578 unit and integration tests** (`pytest tests/`), covering ball-state classification,
 Kalman and RTS smoothing including the physical speed-plausibility gate, mini-court
 coordinate mapping, trajectory drawing, pose-based shot classification, the hit and bounce
 classifier and its feature contract, the rally grammar and its decoder, the no-ground-truth
@@ -978,8 +1010,8 @@ Ordered by measured value, not by interest.
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/                                       # 547 tests, needs the weights
-pytest tests/ -m "not slow"                         # 544, what CI runs, no weights
+pytest tests/                                       # 578 tests, needs the weights
+pytest tests/ -m "not slow"                         # 575, what CI runs, no weights
 
 python eval/shot_frame_accuracy.py                  # reference clip, ships with repo
 python eval/speed_accuracy.py                       # reference clip, ships with repo
@@ -1009,15 +1041,16 @@ mini_visual_court/    mini-court mapping and trajectory drawing
 models/               small trained weights (committed); large weights fetched by script
 notes/                CV concept write-ups
 scripts/              download_models.py, build_clip_suite.py
-tests/                547 unit and integration tests
-tools/                calibrate_court.py, segment_points.py, batch_analyze.py,
+tests/                578 unit and integration tests
+tools/                calibrate_court.py, calibrate_lens.py,
+                      segment_points.py, batch_analyze.py,
                       label_shots.py, diagnose_court.py
 trackers/             tracknet_ball_tracker.py, player_tracker.py
 training/             court keypoint and shot classifier training
 utils/                activity_segments, ball_state, court_calibration,
-                      court_validity, hit_bounce_classifier, kalman_smoother,
-                      serve_detector, serve_landing, trajectory_3d, viewer_3d,
-                      and more
+                      court_validity, hit_bounce_classifier,
+                      kalman_smoother, lens_calibration, serve_detector,
+                      serve_landing, trajectory_3d, viewer_3d, and more
 main.py               pipeline entry point
 cli.py                tennis-vision command
 ```

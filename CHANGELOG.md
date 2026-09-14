@@ -163,7 +163,57 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   after Python has started, arguments were parsed, and model loading had begun. 2 tests
   added. 545 to 547.
 
-### Changed
+### Added (6)
+
+- **`tennis-vision calibrate-lens` measures a camera's lens distortion from a
+  checkerboard.** (`utils/lens_calibration.py`, `tools/calibrate_lens.py`) A homography
+  assumes straight lines project to straight lines; the wide action cameras this project
+  has been pointed at so far do not honour that, and fitting distortion to the court's
+  own lines alone was already tried (see the court calibration release above) and did
+  not converge to a physical lens model - nine lines from one fixed angle is not enough
+  independent information. A checkerboard, filmed from many angles with the same camera
+  and settings, is.
+
+  Fits BOTH lens models OpenCV offers - the standard polynomial model and the fisheye
+  model - from the same detected corners, and keeps whichever measures the lower
+  reprojection error, rather than assuming a "wide" action-camera lens is a true
+  fisheye. Reports low coverage when the board stayed too centred to measure the frame
+  edges, which is where distortion is largest and a few central photos would miss it
+  entirely.
+
+  Two real OpenCV binding bugs were caught before this ever touched a camera, by
+  validating against synthetic checkerboard views with a KNOWN camera matrix and KNOWN
+  distortion rather than trusting "it ran without an exception": `cv2.fisheye`'s
+  `CALIB_*` flags moved to top-level `cv2.CALIB_*` in this build's Python bindings
+  (present under `cv2.fisheye` in 4.x), and `cv2.fisheye.calibrate` /
+  `projectPoints` want each view shaped `(1, N, 3)` - N in the SECOND axis, not the
+  first like `cv2.calibrateCamera` takes - which fails deep inside OpenCV with an
+  unrelated-looking `arithm_op` size-mismatch error rather than a clear shape
+  complaint. A third bug turned up testing the CLI specifically: `ultralytics`, already
+  a dependency for the player detector, monkey-patches `cv2.imread` at import time to
+  raise `cv2.error` on an unreadable file instead of returning `None` - whichever
+  behaviour this tool sees depends on unrelated import order elsewhere in the process,
+  and only raising was actually exercised once a real full-suite run put ultralytics'
+  patch in place first.
+
+  Verified against synthetic checkerboard PHOTOS - not point correspondences handed
+  directly to the fitting functions, real images with the pattern genuinely rendered
+  bent the way a distorted lens would bend it, so `cv2.findChessboardCorners` has to
+  find real corners: recovered focal length within 0.1% and distortion coefficients
+  within a few percent of the values used to render them, from detected corners alone.
+
+  Produces the calibration only. It is not applied to any position the pipeline
+  computes - see the module docstring for why that is a separate, later change with a
+  real "wrong number in metres, silently" failure mode of its own.
+
+  31 tests added: 21 against synthetic point correspondences with exactly known ground
+  truth (including the model-mismatch check that motivates fitting both models at all -
+  the wrong model must fit visibly worse, not almost as well), 10 exercising the real
+  CLI against rendered photos including the two binding bugs and the import-order bug
+  above, each reproduced directly rather than left to depend on suite ordering to catch
+  again. 547 to 578.
+
+
 ### Changed
 
 - **Hand-placed court geometry, for footage the keypoint model cannot read.**

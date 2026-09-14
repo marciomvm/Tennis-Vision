@@ -107,6 +107,11 @@ tracknet_eval_debug.txt
 # holding one folder of stats per clip plus the combined batch_report.*.
 *_analysis/
 
+# The full 165-clip batch run against asd_points/ (Fase 3a) - named with a
+# _full suffix so it doesn't collide with the user's own smaller test runs in
+# asd_analysis/, which means it falls outside the *_analysis/ glob above.
+/asd_analysis_full/
+
 # Personal prep / private notes (never commit)
 prep_james/
 image.png
