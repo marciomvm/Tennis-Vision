@@ -97,6 +97,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-stubs", action="store_true", help="Disable cached stubs, force fresh detection")
     p.add_argument("--fast",     action="store_true", help="Fast mode: first-frame keypoints, no ByteTrack")
     p.add_argument("--debug",    action="store_true", help="Enable DEBUG log level")
+    p.add_argument("--no-video", action="store_true",
+                   help="Skip rendering the annotated output video and the 3-D HTML "
+                        "viewer. The CSV, summary JSON and 3-D scene JSON are written "
+                        "either way - rendering is the slowest stage and is wasted work "
+                        "when only the numbers are wanted, e.g. batch-processing many "
+                        "clips from tools/segment_points.py.")
     p.add_argument("--max-frames", type=_positive_int, default=0, metavar="N",
                    help="Process only the first N frames (0 = all). Useful for a quick "
                         "check on a long video before committing to a full run.")
@@ -1724,139 +1730,146 @@ def main():
                    "physics_downgraded_to_groundstroke": physics_downgraded,
                } if shot_classifications else None)
 
-    # ── 9. Render output video ─────────────────────────────────────
-    logger.info("[9/9] Rendering output video...")
-    output_frames = video_frames.copy()
-
-    logger.debug("  Filtering player detections by confidence...")
-    player_detections = player_tracker.filter_by_confidence(
-        player_detections, det_cfg.get("player_confidence", 0.7)
-    )
-    logger.debug("  Filtering ball detections by confidence...")
-    ball_detections = ball_tracker.filter_by_confidence(
-        ball_detections, det_cfg.get("ball_confidence", 0.6)
-    )
-
-    logger.debug("  Drawing player bounding boxes...")
-    output_frames = player_tracker.draw_bboxes(output_frames, player_detections, thickness=2)
-
-    logger.debug("  Drawing ball bounding boxes...")
-    output_frames = ball_tracker.draw_bboxes(
-        output_frames, ball_detections, color=(0, 255, 255), thickness=2
-    )
-
-    logger.debug("  Drawing player stats panel...")
-    output_frames = draw_player_stats(output_frames, stats_df, stats_params)
-
-    logger.debug("  Drawing court keypoints...")
-    if calibration is not None:
-        # The wireframe rather than loose dots. A hand-placed court is verified by eye
-        # and nothing else, so the output video has to make that verification possible
-        # at a glance: lines that follow the paint, and the region that decided which
-        # people were on this court.
-        output_frames = draw_court_on_video(
-            output_frames, court_keypoints, colour=(0, 220, 255), thickness=2)
-        for frame in output_frames:
-            if court_roi is not None:
-                draw_region(frame, court_roi, colour=(0, 200, 0), thickness=1)
-            for zone in exclusion_zones:
-                draw_region(frame, zone, colour=(0, 0, 255), thickness=2)
-    elif cfg["pipeline"]["per_frame_keypoints"]:
-        output_frames = court_detector.draw_keypoints_on_video_dynamic(
-            output_frames, all_court_keypoints, point_color=(0, 140, 255), radius=5
-        )
+    if args.no_video:
+        logger.info("[9/9] Skipping rendering (--no-video): CSV, summary JSON and "
+                    "the 3-D scene JSON above already have everything a batch run "
+                    "needs, and nobody is going to watch a rendered video for each "
+                    "of many clips. No annotated video and no interactive 3-D "
+                    "viewer are produced.")
     else:
-        output_frames = court_detector.draw_keypoints_on_video(
-            output_frames, court_keypoints, point_color=(0, 140, 255), radius=5
+        # ── 9. Render output video ─────────────────────────────────────
+        logger.info("[9/9] Rendering output video...")
+        output_frames = video_frames.copy()
+
+        logger.debug("  Filtering player detections by confidence...")
+        player_detections = player_tracker.filter_by_confidence(
+            player_detections, det_cfg.get("player_confidence", 0.7)
+        )
+        logger.debug("  Filtering ball detections by confidence...")
+        ball_detections = ball_tracker.filter_by_confidence(
+            ball_detections, det_cfg.get("ball_confidence", 0.6)
         )
 
-    logger.debug("  Drawing mini court + player/ball positions...")
-    output_frames = mini_court.draw_mini_court(output_frames)
-    output_frames = mini_court.draw_ball_trajectory(output_frames, ball_mini_court)
-    output_frames = mini_court.draw_points_on_mini_court(
-        output_frames, player_mini_court, color=(0, 255, 0), draw_trail=True, label=None
-    )
-    output_frames = mini_court.draw_points_on_mini_court(
-        output_frames, ball_mini_court, color=(0, 255, 255), label=None
-    )
+        logger.debug("  Drawing player bounding boxes...")
+        output_frames = player_tracker.draw_bboxes(output_frames, player_detections, thickness=2)
 
-    logger.debug("  Adding per-frame overlays...")
-    for i, frame in enumerate(output_frames):
-        cv2.putText(frame, f"Frame: {i}", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-        if i in {sf + 3 for sf in ball_shot_frames}:
-            cv2.putText(frame, "BALL SHOT!", (10, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-
-    if cfg["pipeline"]["shot_classification"]:
-        logger.debug("  Adding shot classification overlays...")
-        output_frames = draw_shot_classifications(
-            output_frames, shot_classifications, ball_shot_frames
+        logger.debug("  Drawing ball bounding boxes...")
+        output_frames = ball_tracker.draw_bboxes(
+            output_frames, ball_detections, color=(0, 255, 255), thickness=2
         )
 
-    if not court_valid:
-        # The rendered video is what gets watched and screenshotted, and before this
-        # banner existed it looked identical whether the court was fitted correctly or
-        # fitted to the crowd. Drawn LAST so no panel can paint over the warning.
-        logger.debug("  Stamping calibration warning...")
-        output_frames = draw_calibration_warning(output_frames, line_support)
-    elif not fps_support.is_supported:
-        # Only when the court IS valid, so the two banners cannot fight for the same
-        # band. A failed court fit is the more serious of the two and keeps the space:
-        # if the court is wrong, the frame rate is the smaller of the reader's problems.
-        logger.debug("  Stamping frame-rate warning...")
-        output_frames = draw_frame_rate_warning(
-            output_frames, fps_support.fps, fps_support.status,
-            (SUPPORTED_MIN_FPS, SUPPORTED_MAX_FPS),
-        )
+        logger.debug("  Drawing player stats panel...")
+        output_frames = draw_player_stats(output_frames, stats_df, stats_params)
 
-    # Save output
-    output_path = cfg["io"]["output_video"]
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-
-    if save_video(output_frames, output_path, fps=fps):
-        logger.info(f"Output video → {output_path}")
-    else:
-        alt = output_path.replace(".avi", "_fallback.mp4")
-        logger.warning(f"AVI save failed - retrying as {alt}...")
-        if save_video(output_frames, alt, fps=fps):
-            logger.info(f"Output video → {alt}")
+        logger.debug("  Drawing court keypoints...")
+        if calibration is not None:
+            # The wireframe rather than loose dots. A hand-placed court is verified by eye
+            # and nothing else, so the output video has to make that verification possible
+            # at a glance: lines that follow the paint, and the region that decided which
+            # people were on this court.
+            output_frames = draw_court_on_video(
+                output_frames, court_keypoints, colour=(0, 220, 255), thickness=2)
+            for frame in output_frames:
+                if court_roi is not None:
+                    draw_region(frame, court_roi, colour=(0, 200, 0), thickness=1)
+                for zone in exclusion_zones:
+                    draw_region(frame, zone, colour=(0, 0, 255), thickness=2)
+        elif cfg["pipeline"]["per_frame_keypoints"]:
+            output_frames = court_detector.draw_keypoints_on_video_dynamic(
+                output_frames, all_court_keypoints, point_color=(0, 140, 255), radius=5
+            )
         else:
-            logger.error("All video save attempts failed")
+            output_frames = court_detector.draw_keypoints_on_video(
+                output_frames, court_keypoints, point_color=(0, 140, 255), radius=5
+            )
 
-    if viewer_spec is not None:
-        # Built after the video so it can reference a browser-playable copy. The
-        # pipeline writes AVI/MPEG-4 Part 2, which OpenCV produces reliably but no
-        # browser can play - the viewer's video tab was silently blank because a
-        # <video> element with an unsupported source just shows nothing.
-        trajectories, shot_labels, fit_ok = viewer_spec
-        web_video = to_browser_playable(output_path)
-        if web_video is None:
-            logger.warning("  Viewer video tab will be empty: no browser-playable copy "
-                           "could be produced (is ffmpeg installed?)")
-        # Player ground positions, converted from mini-court pixels to court metres.
-        # Passed only when the court fit was trusted: without a valid court these
-        # coordinates are meaningless, and a marker drawn from a bad homography would be
-        # a confident claim about where someone stood.
-        viewer_players = players_to_metres(
-            player_mini_court,
-            mini_court.court_start_x,
-            mini_court.court_start_y,
-            px_to_m_scale,
-        ) if fit_ok else None
-
-        viewer_path = build_viewer(
-            trajectories,
-            Path(output_path).with_suffix(".html"),
-            fps=fps,
-            video_path=web_video.name if web_video else None,
-            shot_types=shot_labels,
-            court_valid=fit_ok,
-            players_m=viewer_players,
+        logger.debug("  Drawing mini court + player/ball positions...")
+        output_frames = mini_court.draw_mini_court(output_frames)
+        output_frames = mini_court.draw_ball_trajectory(output_frames, ball_mini_court)
+        output_frames = mini_court.draw_points_on_mini_court(
+            output_frames, player_mini_court, color=(0, 255, 0), draw_trail=True, label=None
         )
-        if viewer_players:
-            logger.info(f"  3-D viewer: {len(viewer_players)} frames of player positions")
-        logger.info(f"3-D viewer  → {viewer_path}  (open in any browser)")
+        output_frames = mini_court.draw_points_on_mini_court(
+            output_frames, ball_mini_court, color=(0, 255, 255), label=None
+        )
+
+        logger.debug("  Adding per-frame overlays...")
+        for i, frame in enumerate(output_frames):
+            cv2.putText(frame, f"Frame: {i}", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+            if i in {sf + 3 for sf in ball_shot_frames}:
+                cv2.putText(frame, "BALL SHOT!", (10, 60),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+
+        if cfg["pipeline"]["shot_classification"]:
+            logger.debug("  Adding shot classification overlays...")
+            output_frames = draw_shot_classifications(
+                output_frames, shot_classifications, ball_shot_frames
+            )
+
+        if not court_valid:
+            # The rendered video is what gets watched and screenshotted, and before this
+            # banner existed it looked identical whether the court was fitted correctly or
+            # fitted to the crowd. Drawn LAST so no panel can paint over the warning.
+            logger.debug("  Stamping calibration warning...")
+            output_frames = draw_calibration_warning(output_frames, line_support)
+        elif not fps_support.is_supported:
+            # Only when the court IS valid, so the two banners cannot fight for the same
+            # band. A failed court fit is the more serious of the two and keeps the space:
+            # if the court is wrong, the frame rate is the smaller of the reader's problems.
+            logger.debug("  Stamping frame-rate warning...")
+            output_frames = draw_frame_rate_warning(
+                output_frames, fps_support.fps, fps_support.status,
+                (SUPPORTED_MIN_FPS, SUPPORTED_MAX_FPS),
+            )
+
+        # Save output
+        output_path = cfg["io"]["output_video"]
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+
+        if save_video(output_frames, output_path, fps=fps):
+            logger.info(f"Output video → {output_path}")
+        else:
+            alt = output_path.replace(".avi", "_fallback.mp4")
+            logger.warning(f"AVI save failed - retrying as {alt}...")
+            if save_video(output_frames, alt, fps=fps):
+                logger.info(f"Output video → {alt}")
+            else:
+                logger.error("All video save attempts failed")
+
+        if viewer_spec is not None:
+            # Built after the video so it can reference a browser-playable copy. The
+            # pipeline writes AVI/MPEG-4 Part 2, which OpenCV produces reliably but no
+            # browser can play - the viewer's video tab was silently blank because a
+            # <video> element with an unsupported source just shows nothing.
+            trajectories, shot_labels, fit_ok = viewer_spec
+            web_video = to_browser_playable(output_path)
+            if web_video is None:
+                logger.warning("  Viewer video tab will be empty: no browser-playable copy "
+                               "could be produced (is ffmpeg installed?)")
+            # Player ground positions, converted from mini-court pixels to court metres.
+            # Passed only when the court fit was trusted: without a valid court these
+            # coordinates are meaningless, and a marker drawn from a bad homography would be
+            # a confident claim about where someone stood.
+            viewer_players = players_to_metres(
+                player_mini_court,
+                mini_court.court_start_x,
+                mini_court.court_start_y,
+                px_to_m_scale,
+            ) if fit_ok else None
+
+            viewer_path = build_viewer(
+                trajectories,
+                Path(output_path).with_suffix(".html"),
+                fps=fps,
+                video_path=web_video.name if web_video else None,
+                shot_types=shot_labels,
+                court_valid=fit_ok,
+                players_m=viewer_players,
+            )
+            if viewer_players:
+                logger.info(f"  3-D viewer: {len(viewer_players)} frames of player positions")
+            logger.info(f"3-D viewer  → {viewer_path}  (open in any browser)")
 
     logger.info("=" * 60)
     logger.info("Pipeline complete.")

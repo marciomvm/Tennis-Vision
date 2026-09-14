@@ -103,6 +103,10 @@ tracknet_eval_debug.txt
 # writes cut clips and manifest.json into. Generated, and often hundreds of MB.
 *_points/
 
+# tools/batch_analyze.py output: the default <input name>_analysis/ directory,
+# holding one folder of stats per clip plus the combined batch_report.*.
+*_analysis/
+
 # Personal prep / private notes (never commit)
 prep_james/
 image.png

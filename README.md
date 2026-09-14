@@ -126,6 +126,42 @@ per segment in `manifest.json` as `fps_actual` and `fps_support` - not assumed f
 having asked ffmpeg for it. Verified on a real 60fps clip: resampled to exactly 30/1 with
 no mismatches reported.
 
+## Processing what segmentation kept
+
+`tennis-vision segment` leaves you with a directory of clips and a manifest, not a
+single number. To run the real pipeline over all of them and combine what comes back:
+
+```bash
+tennis-vision batch-analyze session_points/ --court-calibration calibration/court_A.json
+```
+
+One calibration for every clip, because they all share the camera position the
+recording was made from - segmentation does not move the camera. Discovery by clip file
+name will not find it on its own (a clip is not named like the recording it came from),
+so pass it explicitly. `--court-calibration` is not required, but skipping it falls
+every clip back to the keypoint model, which is exactly the case a calibration exists
+for on this kind of footage; the tool says so if you do not pass one.
+
+Rendering is skipped by default (`--with-video` opts back in) - it is the slowest stage
+of the pipeline and nobody watches a rendered video for each of a hundred clips. Measured
+on a real ~10 s clip: about 45 s end to end including model loading, so budget roughly
+that per clip for a full batch.
+
+**Player identity does not carry across clips, and the report never pretends it does.**
+`utils.player_selection` numbers the two people in a clip 1 and 2 by whichever has the
+lower internal tracker id in THAT run - not by which side of the net they stand on. Track
+ids restart fresh every time the pipeline runs, so "Player 1" in one clip and "Player 1"
+in another have no relationship. The batch report therefore sums total shots (both
+players together, which needs no identity) and shot-count-weights the average speed
+across clips, but never produces a combined per-player total - `batch_report.csv` has
+the per-clip P1/P2 breakdown instead, meaningful only within each row's own clip.
+
+Writes `batch_report.json` (full per-clip data plus the combined totals) and
+`batch_report.csv` (one row per clip, for a spreadsheet) into `<out-dir>/`, alongside
+each clip's own isolated stats folder. `--dry-run` lists what would run without running
+it; `--limit N` and `--max-frames N` make a fast pass over the whole batch before
+committing to the full one; `--skip-existing` resumes an interrupted run.
+
 The calibration is written to `calibration/<video name>.json` and discovered by video
 name. One camera position, many recordings: point later clips at the same file rather
 than redoing the clicks.
@@ -588,7 +624,7 @@ on for repeated runs against the same clip.
 
 ### Test suite
 
-**510 unit and integration tests** (`pytest tests/`), covering ball-state classification,
+**533 unit and integration tests** (`pytest tests/`), covering ball-state classification,
 Kalman and RTS smoothing including the physical speed-plausibility gate, mini-court
 coordinate mapping, trajectory drawing, pose-based shot classification, the hit and bounce
 classifier and its feature contract, the rally grammar and its decoder, the no-ground-truth
@@ -919,8 +955,8 @@ Ordered by measured value, not by interest.
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/                                       # 510 tests, needs the weights
-pytest tests/ -m "not slow"                         # 509, what CI runs, no weights
+pytest tests/                                       # 533 tests, needs the weights
+pytest tests/ -m "not slow"                         # 530, what CI runs, no weights
 
 python eval/shot_frame_accuracy.py                  # reference clip, ships with repo
 python eval/speed_accuracy.py                       # reference clip, ships with repo
@@ -950,9 +986,9 @@ mini_visual_court/    mini-court mapping and trajectory drawing
 models/               small trained weights (committed); large weights fetched by script
 notes/                CV concept write-ups
 scripts/              download_models.py, build_clip_suite.py
-tests/                510 unit and integration tests
-tools/                calibrate_court.py, segment_points.py, label_shots.py,
-                      diagnose_court.py
+tests/                533 unit and integration tests
+tools/                calibrate_court.py, segment_points.py, batch_analyze.py,
+                      label_shots.py, diagnose_court.py
 trackers/             tracknet_ball_tracker.py, player_tracker.py
 training/             court keypoint and shot classifier training
 utils/                activity_segments, ball_state, court_calibration,

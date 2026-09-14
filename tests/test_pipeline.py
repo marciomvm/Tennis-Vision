@@ -326,6 +326,60 @@ def test_full_pipeline_smoke(tmp_path):
     assert os.path.getsize(out_video) > 0, "Output video is empty"
 
 
+def test_no_video_parses_and_defaults_off():
+    """--no-video exists, and its absence must not change existing behaviour: every
+    caller before this flag existed forwarded no such thing and must keep rendering."""
+    import main
+
+    original_argv = sys.argv
+    try:
+        sys.argv = ["main.py", "--input", "x.mp4"]
+        assert main.parse_args().no_video is False
+        sys.argv = ["main.py", "--input", "x.mp4", "--no-video"]
+        assert main.parse_args().no_video is True
+    finally:
+        sys.argv = original_argv
+
+
+@pytest.mark.slow
+def test_no_video_skips_rendering_but_keeps_the_numbers(tmp_path):
+    """
+    Rendering is the slowest stage, and batch-processing many clips (e.g. the output of
+    tools/segment_points.py) pays for it 166 times over for videos nobody will watch.
+    --no-video must skip the annotated video and the 3-D HTML viewer while leaving the
+    CSV, summary JSON and 3-D scene JSON - the actual numbers - untouched.
+    """
+    missing = _missing_weights()
+    if missing:
+        pytest.skip(
+            "needs the downloadable model weights, missing: " + ", ".join(missing)
+            + ". Fetch them with: python scripts/download_models.py"
+        )
+
+    import subprocess
+
+    out_video = tmp_path / "would_be_skipped.avi"
+    out_stats = tmp_path / "stats"
+
+    result = subprocess.run(
+        [sys.executable, "main.py",
+         "--input", "input_videos/input_video_2.mp4",
+         "--output", str(out_video),
+         "--fast", "--no-stubs", "--max-frames", "40", "--no-video"],
+        capture_output=True, text=True, timeout=600,
+    )
+
+    assert result.returncode == 0, f"Pipeline crashed:\n{result.stderr}"
+    assert not out_video.exists(), "the annotated video should not be written at all"
+    assert not out_video.with_suffix(".html").exists(), "nor the 3-D HTML viewer"
+
+    summaries = list((REPO_ROOT / "output" / "stats").glob("summary_*.json"))
+    assert summaries, "summary JSON must still be written with --no-video"
+    latest = max(summaries, key=lambda p: p.stat().st_mtime)
+    data = json.loads(latest.read_text(encoding="utf-8"))
+    assert "total_shots_p1" in data or "total_shots_p2" in data
+
+
 # ─────────────────────────────────────────────────────────────────
 # The stats HUD must not print a NaN at the viewer
 # ─────────────────────────────────────────────────────────────────

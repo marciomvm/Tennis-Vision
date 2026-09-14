@@ -10,6 +10,7 @@ so there is exactly one code path per capability and the CLI cannot drift from w
     tennis-vision analyze clip.mp4 -o output/run.avi
     tennis-vision calibrate clip.mp4
     tennis-vision segment session.mp4
+    tennis-vision batch-analyze session_points/ --court-calibration calibration/c.json
     tennis-vision download-models
     tennis-vision version
 """
@@ -41,6 +42,11 @@ def _cmd_analyze(argv: list[str]) -> int:
     parser.add_argument("--fast", action="store_true",
                         help="single-frame court keypoints; faster, less camera-robust")
     parser.add_argument("--debug", action="store_true", help="verbose logging")
+    parser.add_argument("--no-video", action="store_true",
+                        help="skip the annotated video and 3-D viewer; CSV and summary "
+                             "JSON are written either way. Rendering is the slowest "
+                             "stage - skip it when batch-processing many clips and only "
+                             "the numbers are wanted")
     parser.add_argument("--court-calibration", metavar="FILE", default=None,
                         help="hand-placed court geometry (tennis-vision calibrate). "
                              "Found automatically at calibration/<video name>.json, so "
@@ -67,6 +73,8 @@ def _cmd_analyze(argv: list[str]) -> int:
         forwarded.append("--fast")
     if args.debug:
         forwarded.append("--debug")
+    if args.no_video:
+        forwarded.append("--no-video")
     if args.court_calibration:
         forwarded += ["--court-calibration", args.court_calibration]
     if args.no_court_calibration:
@@ -109,6 +117,19 @@ def _cmd_segment(argv: list[str]) -> int:
         sys.argv = original_argv
 
 
+def _cmd_batch_analyze(argv: list[str]) -> int:
+    """Run the pipeline over every clip a segmentation manifest produced."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from tools import batch_analyze
+
+    original_argv = sys.argv
+    try:
+        sys.argv = ["batch_analyze.py", *argv]
+        return batch_analyze.main()
+    finally:
+        sys.argv = original_argv
+
+
 def _cmd_download_models(argv: list[str]) -> int:
     """Fetch model weights into models/."""
     argparse.ArgumentParser(
@@ -129,8 +150,8 @@ def main() -> int:
         epilog="Run 'tennis-vision <command> --help' for command-specific options.",
     )
     parser.add_argument("command", nargs="?", default="help",
-                        choices=["analyze", "calibrate", "segment", "download-models",
-                                 "version", "help"],
+                        choices=["analyze", "calibrate", "segment", "batch-analyze",
+                                 "download-models", "version", "help"],
                         help="what to do")
 
     # Dispatch off sys.argv BEFORE argparse sees it, so that a -h after a subcommand
@@ -142,6 +163,7 @@ def main() -> int:
         "analyze": _cmd_analyze,
         "calibrate": _cmd_calibrate,
         "segment": _cmd_segment,
+        "batch-analyze": _cmd_batch_analyze,
         "download-models": _cmd_download_models,
     }
     argv = sys.argv[1:]

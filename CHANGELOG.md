@@ -66,6 +66,48 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   would exit 0 and pass a mocked test while producing an unchanged 60fps file. 499 to
   510.
 
+### Added (3)
+
+- **`main.py --no-video` skips rendering the annotated video and the 3-D HTML viewer.**
+  The CSV, summary JSON and 3-D scene JSON - already written before rendering starts -
+  are unaffected. Rendering (bounding boxes, court wireframe, mini-court, per-frame
+  overlays, then the video encode) is the slowest stage of the pipeline, and batch-
+  processing many clips pays for it once per clip for videos nobody is going to watch.
+  Off by default - every existing caller keeps rendering exactly as before. Forwarded
+  through `tennis-vision analyze --no-video`. 2 tests added, one a real subprocess run
+  confirming neither file is written while the summary still is.
+
+- **`tennis-vision batch-analyze` runs the pipeline over every clip a segmentation
+  manifest produced, and combines the results.** (`tools/batch_analyze.py`) One
+  `--court-calibration` applies to every clip, since they share the camera position of
+  the recording they were cut from - auto-discovery by clip file name will not find it
+  on its own, because a clip is not named like the source recording. Defaults to
+  `--no-video` (a batch run is about the numbers), with `--with-video` to opt back in,
+  and gives each clip its own output folder rather than relying on the shared,
+  second-resolution timestamp `main.py` otherwise writes stats under - avoiding a
+  collision risk rather than treating it as merely unlikely.
+
+  **Player identity does not survive between clips, and the report is built to never
+  imply otherwise.** `utils.player_selection` numbers a clip's two people 1 and 2 by
+  whichever has the lower internal tracker id in THAT run, not by court side - checked
+  in this repository's own code before writing a line of the aggregator. Track ids
+  restart fresh every pipeline run, so "Player 1" in one clip and "Player 1" in another
+  have no relationship, and `aggregate_results` never produces a combined per-player
+  figure as a result: it sums total shots (identity-independent) and shot-count-weights
+  the average speed across clips (not an unweighted mean of per-clip averages, which
+  would let a 1-shot clip outweigh a 20-shot one), and leaves the per-clip P1/P2
+  breakdown in `batch_report.csv`, valid only within each row's own clip.
+
+  Verified two ways: `aggregate_results` against synthetic records, checking a forbidden
+  key set never appears rather than only reading the prose note next to it; and a real,
+  unmocked run against 3 real clips from a genuine `asd_points/` batch a user produced
+  independently while this was in progress, using the reference clip's calibration
+  reused across a different recording from the same fixed camera - confirmed to be the
+  same camera by overlaying that calibration on three widely-spaced frames of the second
+  recording and finding the court lines still lined up. 21 tests added, one a real
+  two-clip subprocess batch end to end. 510 to 533.
+
+### Changed
 ### Changed
 
 - **Hand-placed court geometry, for footage the keypoint model cannot read.**
