@@ -40,6 +40,21 @@ Speeds are combined by weighting each clip's average by its own shot count, not 
 averaging the per-clip averages unweighted - a clip with one shot must not count as much
 as a clip with twenty.
 
+`near_camera_pid` in each row is the closest this report gets to identity, and it is
+still only a WITHIN-CLIP fact: which of that clip's two ids sat, on median, closer to
+the camera. It is not carried between clips and it does not survive a change of ends -
+real tennis swaps which physical person is near partway through a match, and nothing
+here detects that happening. Telling the two players apart for good, across a change of
+ends, needs to look at what they look like (visual re-identification), which this tool
+does not attempt.
+
+A combined video
+-----------------
+--combine-video (implies --with-video) stitches every successfully rendered clip into
+one file, in the manifest's chronological order, via ffmpeg's concat filter - a
+re-encoding join rather than a stream-copy one, so clips do not need byte-identical
+codec parameters to combine cleanly.
+
 Usage
 -----
     python tools/batch_analyze.py session_points/ --court-calibration calibration/court_A.json
@@ -52,6 +67,7 @@ import argparse
 import csv
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -158,6 +174,49 @@ def _latest_summary(clip_dir: Path) -> dict | None:
     return json.loads(summaries[-1].read_text(encoding="utf-8"))
 
 
+# ── combining every rendered clip into one video ────────────────────────────
+
+
+def build_concat_command(video_paths: list[Path], out_path: Path) -> list[str]:
+    """
+    The ffmpeg command that joins `video_paths`, in order, into `out_path`.
+
+    Pure and separate from running it, so the command itself - the part a flag-ordering
+    mistake would break - is checkable without spawning ffmpeg or needing real video
+    files on disk.
+
+    Uses the CONCAT FILTER (`concat=n=...:v=1:a=0`, decode-and-re-encode), not the
+    concat DEMUXER (`-f concat`, stream copy). The demuxer is faster but requires every
+    input to share identical codec parameters, which nothing here guarantees - clips
+    come from `main.py` runs that could in principle fall back from XVID to MJPG per
+    run (utils/video_utils.save_video tries a second codec if the first fails to open).
+    The filter re-encodes regardless of what it was handed, at the cost of the encoding
+    time, which is small next to what producing these clips already cost.
+    """
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
+    for path in video_paths:
+        cmd += ["-i", str(path)]
+    n = len(video_paths)
+    streams = "".join(f"[{i}:v]" for i in range(n))
+    cmd += ["-filter_complex", f"{streams}concat=n={n}:v=1:a=0[outv]",
+           "-map", "[outv]",
+           "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-pix_fmt", "yuv420p",
+           "-movflags", "+faststart", str(out_path)]
+    return cmd
+
+
+def combine_videos(video_paths: list[Path], out_path: Path) -> tuple[bool, str]:
+    """Run build_concat_command and report whether out_path came out the other end."""
+    if not video_paths:
+        return False, "no rendered clips to combine"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(build_concat_command(video_paths, out_path),
+                            capture_output=True, text=True)
+    if not out_path.exists() or out_path.stat().st_size == 0:
+        return False, (result.stderr or "unknown ffmpeg error").strip()[-800:]
+    return True, ""
+
+
 def _clip_record(clip: Path, summary: dict, context: dict) -> dict:
     """The fields worth a row in the combined report, pulled out of one clip's full
     summary.json - see aggregate_results for what is and is not safe to combine."""
@@ -177,6 +236,9 @@ def _clip_record(clip: Path, summary: dict, context: dict) -> dict:
         "court_source": summary.get("court_source"),
         "court_line_support": summary.get("court_line_support"),
         "player_selection_status": (summary.get("player_selection") or {}).get("status"),
+        # Which id sat closer to the camera in THIS clip - not a claim about which
+        # physical person that is over the whole match. See the module docstring.
+        "near_camera_pid": (summary.get("player_selection") or {}).get("near_camera_pid"),
         "ball_coverage": (summary.get("ball") or {}).get("coverage"),
         "shot_speed_3d_mean_kmh": (summary.get("shot_speed_3d_kmh") or {}).get("mean"),
         "shot_speed_3d_segments": (summary.get("shot_speed_3d_kmh") or {}).get("segments"),
@@ -306,6 +368,10 @@ def main() -> int:
     parser.add_argument("--with-video", action="store_true",
                         help="render each clip's annotated video too (slow - off by "
                              "default, since a batch run is about the numbers)")
+    parser.add_argument("--combine-video", action="store_true",
+                        help="stitch every rendered clip into one video, in "
+                             "chronological order, written to combined_analysis.mp4 - "
+                             "implies --with-video")
     parser.add_argument("--max-frames", type=int, default=0, metavar="N",
                         help="cap every clip to its first N frames - a fast pass over "
                              "the whole batch before committing to the full run")
@@ -328,6 +394,14 @@ def main() -> int:
         return 2
     if args.court_calibration and not Path(args.court_calibration).exists():
         print(f"error: calibration not found: {args.court_calibration}", file=sys.stderr)
+        return 2
+    if args.combine_video and not args.with_video:
+        print("  --combine-video implies --with-video (there is nothing to stitch "
+             "together without a rendered clip per video) - enabling it")
+        args.with_video = True
+    if args.combine_video and not args.dry_run and shutil.which("ffmpeg") is None:
+        print("error: ffmpeg not found on PATH - required for --combine-video",
+              file=sys.stderr)
         return 2
 
     clips, manifest = _resolve_clips(input_path)
@@ -397,6 +471,27 @@ def main() -> int:
 
     aggregate = aggregate_results(records)
 
+    combined_video: dict = {"attempted": False}
+    if args.combine_video:
+        # In the same order records were appended, which is the order `clips` was
+        # walked in - the manifest's own chronological order, preserved because only
+        # successes are appended and never reordered.
+        rendered = [out_dir / Path(r["clip"]).stem / "rendered.avi" for r in records]
+        rendered = [p for p in rendered if p.exists()]
+        combined_path = out_dir / "combined_analysis.mp4"
+        print(f"\n  combining {len(rendered)} rendered clip(s) into "
+             f"{combined_path.name}...")
+        ok, error = combine_videos(rendered, combined_path)
+        combined_video = {
+            "attempted": True, "clips_combined": len(rendered),
+            "path": str(combined_path) if ok else None,
+            "error": None if ok else error,
+        }
+        if ok:
+            print(f"  wrote {combined_path}")
+        else:
+            print(f"  FAILED to combine: {error}")
+
     report = {
         "input": str(args.input),
         "clips_total": len(clips),
@@ -405,6 +500,7 @@ def main() -> int:
         "calibration": args.court_calibration,
         "elapsed_s": round(time.time() - t0, 1),
         "aggregate": aggregate,
+        "combined_video": combined_video,
         "failures": failures,
         "clips": records,
     }
@@ -434,6 +530,8 @@ def main() -> int:
     if failures:
         print(f"  {len(failures)} clip(s) failed outright - see batch_report.json")
     print(f"\n  {aggregate['note']}")
+    if combined_video.get("path"):
+        print(f"\n  combined video: {combined_video['path']}")
     print(f"\n  wrote {out_dir / 'batch_report.json'}")
     print(f"  wrote {out_dir / 'batch_report.csv'}")
     return 0

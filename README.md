@@ -162,6 +162,29 @@ each clip's own isolated stats folder. `--dry-run` lists what would run without 
 it; `--limit N` and `--max-frames N` make a fast pass over the whole batch before
 committing to the full one; `--skip-existing` resumes an interrupted run.
 
+**A within-clip hint at identity.** Each row also carries `near_camera_pid`: which of
+that clip's two ids sat, on median, closer to the camera - the same "bottom half" the
+selection logic already uses to tell players from spectators, just not previously
+written anywhere. It is not carried between clips and it does not survive a change of
+ends: real tennis swaps which physical person is near partway through a match, and
+nothing here detects that happening. It says something true about one clip, not
+something true about the whole session.
+
+**A combined video.** `--combine-video` (implies `--with-video`) stitches every
+rendered clip into one file, in the manifest's chronological order:
+
+```bash
+tennis-vision batch-analyze session_points/ --court-calibration calibration/c.json --combine-video
+```
+
+Written to `combined_analysis.mp4` via ffmpeg's concat FILTER rather than its concat
+demuxer, so the clips being joined do not need byte-identical codec parameters - a
+re-encoding pass, at a cost that is small next to producing the clips in the first
+place. Watching it is also the practical way to build your own identity map across a
+change of ends: the render already draws "Player 1" / "Player 2" boxes on each frame, so
+seeing which shirt is in which box, clip by clip, tells you more than any automatic
+labelling in this pipeline currently can.
+
 The calibration is written to `calibration/<video name>.json` and discovered by video
 name. One camera position, many recordings: point later clips at the same file rather
 than redoing the clicks.
@@ -624,7 +647,7 @@ on for repeated runs against the same clip.
 
 ### Test suite
 
-**533 unit and integration tests** (`pytest tests/`), covering ball-state classification,
+**545 unit and integration tests** (`pytest tests/`), covering ball-state classification,
 Kalman and RTS smoothing including the physical speed-plausibility gate, mini-court
 coordinate mapping, trajectory drawing, pose-based shot classification, the hit and bounce
 classifier and its feature contract, the rally grammar and its decoder, the no-ground-truth
@@ -955,8 +978,8 @@ Ordered by measured value, not by interest.
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/                                       # 533 tests, needs the weights
-pytest tests/ -m "not slow"                         # 530, what CI runs, no weights
+pytest tests/                                       # 545 tests, needs the weights
+pytest tests/ -m "not slow"                         # 542, what CI runs, no weights
 
 python eval/shot_frame_accuracy.py                  # reference clip, ships with repo
 python eval/speed_accuracy.py                       # reference clip, ships with repo
@@ -986,7 +1009,7 @@ mini_visual_court/    mini-court mapping and trajectory drawing
 models/               small trained weights (committed); large weights fetched by script
 notes/                CV concept write-ups
 scripts/              download_models.py, build_clip_suite.py
-tests/                533 unit and integration tests
+tests/                545 unit and integration tests
 tools/                calibrate_court.py, segment_points.py, batch_analyze.py,
                       label_shots.py, diagnose_court.py
 trackers/             tracknet_ball_tracker.py, player_tracker.py

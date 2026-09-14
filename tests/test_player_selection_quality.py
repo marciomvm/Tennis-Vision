@@ -179,3 +179,57 @@ def test_empty_input_does_not_raise(selected):
     result = assess_selection(selected, NET_Y, people_detected=0)
     assert result.status == SELECTION_FAILED
     json.dumps(result.as_dict())
+
+
+# ── near_pid: which id sat closer to the camera in THIS clip ───────────────────
+#
+# Not a claim about which physical person that is across a whole match - a change of
+# ends swaps it mid-session, and nothing in this module knows that happened. See
+# tools/batch_analyze.py's module docstring for the identity problem this does and does
+# not help with.
+
+def test_near_pid_names_whichever_id_sat_lower_in_the_image():
+    """The default fixture already puts player 1 near (larger image y) and player 2
+    far - the healthy, unambiguous case."""
+    result = assess_selection(frames(), NET_Y, people_detected=14)
+    assert result.near_pid == 1
+
+
+def test_near_pid_flips_when_the_positions_do():
+    """Player 2 near, player 1 far this time - near_pid must follow the DATA, not
+    default to a fixed id."""
+    swapped = [{1: [10.0, 100.0, 40.0, FAR_FEET],
+               2: [10.0, 100.0, 40.0, NEAR_FEET]} for _ in range(100)]
+    result = assess_selection(swapped, NET_Y, people_detected=14)
+    assert result.near_pid == 2
+
+
+def test_near_pid_is_none_when_a_player_was_never_seen():
+    """No feet position at all for player 2 - there is nothing to compare, so this must
+    say so rather than guess."""
+    only_p1 = [{1: [10.0, 100.0, 40.0, NEAR_FEET]} for _ in range(50)]
+    result = assess_selection(only_p1, NET_Y, people_detected=14)
+    assert result.near_pid is None
+
+
+def test_near_pid_serialises_as_a_plain_int_not_a_numpy_scalar():
+    """The same failure mode the rest of this file guards against for opposite_sides:
+    a numpy scalar here would truncate the summary mid-write."""
+    result = assess_selection(frames(), NET_Y, people_detected=14)
+    payload = result.as_dict()
+    assert payload["near_camera_pid"] == 1
+    assert type(payload["near_camera_pid"]) is int
+    json.dumps(payload)
+
+
+def test_near_pid_is_reported_even_when_selection_otherwise_failed():
+    """Positional data is still worth reporting on a failed selection - the caller
+    already sees `status` and can decide whether to trust it, so this should not go
+    silent just because the gate as a whole did."""
+    same_side_but_measurable = [
+        {1: [10.0, 100.0, 40.0, NEAR_FEET], 2: [50.0, 100.0, 80.0, NEAR_FEET - 5]}
+        for _ in range(100)
+    ]
+    result = assess_selection(same_side_but_measurable, NET_Y, people_detected=40)
+    assert result.status == SELECTION_FAILED
+    assert result.near_pid in (1, 2)

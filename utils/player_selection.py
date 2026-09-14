@@ -80,6 +80,13 @@ class SelectionQuality:
     longest_gaps: tuple[int, int]
     opposite_sides: bool
     people_detected: int
+    # Which of the two ids sat, on median, closer to the camera - NOT a claim about
+    # which one is the "real" near player for a whole match. A change of ends mid-match
+    # swaps which physical person this is, and this field says nothing about that: it
+    # is one clip's own median position, nothing more. See batch_analyze's docstring
+    # for why no field in this codebase claims to identify one physical person across
+    # separate clips.
+    near_pid: int | None = None
 
     @property
     def is_ok(self) -> bool:
@@ -97,6 +104,7 @@ class SelectionQuality:
             "player_2_longest_gap_frames": int(self.longest_gaps[1]),
             "players_on_opposite_sides": bool(self.opposite_sides),
             "people_detected": int(self.people_detected),
+            "near_camera_pid": self.near_pid,
         }
         if self.status != SELECTION_OK:
             payload["warning"] = self.reason
@@ -155,6 +163,15 @@ def assess_selection(
     opposite = bool(near is not None and far is not None
                     and (near - net_y) * (far - net_y) < 0)
 
+    # Image y grows downward and the near baseline sits at the bottom of frame in every
+    # clip this pipeline has been run on (matches is_bottom_half in trackers.player_
+    # tracker), so whichever id has the LARGER median foot-y sat closer to the camera.
+    # The ternary already selects a plain Python int (1 or 2), not the comparison
+    # result itself, so this needs no int() to stay JSON-serialisable.
+    near_pid = None
+    if medians[0] is not None and medians[1] is not None:
+        near_pid = 1 if medians[0] > medians[1] else 2
+
     problems = []
     if not opposite:
         problems.append(
@@ -186,4 +203,5 @@ def assess_selection(
         status=status, reason=reason,
         coverage=(coverage[0], coverage[1]), longest_gaps=(gaps[0], gaps[1]),
         opposite_sides=opposite, people_detected=people_detected,
+        near_pid=near_pid,
     )

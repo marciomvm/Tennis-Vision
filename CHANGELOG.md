@@ -107,6 +107,52 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   recording and finding the court lines still lined up. 21 tests added, one a real
   two-clip subprocess batch end to end. 510 to 533.
 
+### Added (4)
+
+- **A within-clip hint at identity, and a combined video.** A user running the batch
+  tool against a real 40-minute session asked the sharpest possible question about the
+  identity gap the previous release documented but did not touch: real tennis players
+  change ends partway through a match, so even court side (near/far the camera) cannot
+  name one physical person for a whole session, on top of the internal-tracker-id
+  numbering already known not to.
+
+  `player_selection.near_pid` (checked directly in `utils/player_selection.py` before
+  building anything on it) is the SAME "is_bottom_half" distinction the selection logic
+  already computes internally to tell players from spectators, just not previously
+  written anywhere a consumer could read it. Exposed as `near_camera_pid` in
+  `summary.json`'s `player_selection` section and in every row of
+  `batch_analyze`'s `batch_report.csv`. It answers "which id was closer to the camera in
+  THIS clip" and nothing more - it is not carried between clips, and a change of ends
+  between two clips is exactly the case it cannot detect. The module docstring and the
+  README are explicit that a real fix needs to look at what the two people look like
+  (visual re-identification), which is not attempted here.
+
+  `tennis-vision batch-analyze ... --combine-video` (implies `--with-video`) answers a
+  second question the same user asked: whether there is any video output at all.
+  Stitches every successfully rendered clip into one file, in the manifest's
+  chronological order, via ffmpeg's concat FILTER rather than its demuxer - a
+  re-encoding join that does not require the clips being joined to share identical
+  codec parameters, unlike the faster stream-copy alternative. Watching the result is
+  also the practical way to build a real identity map by eye: the render already boxes
+  and labels "Player 1" / "Player 2" every frame, so which shirt is in which box, clip
+  by clip, says more than any automatic labelling this pipeline currently attempts.
+
+  Verified against real data: a 3-clip, `--max-frames 90` batch with `--combine-video`
+  produced a video whose duration (9.000s) matched 3 x 90 frames at 30fps exactly, and a
+  frame pulled from inside the third clip's span showed the real rendered overlay -
+  player boxes, court wireframe, mini-court, shot panel - confirming the joined file is
+  real analysed footage and not a placeholder. `near_camera_pid` read back as `1` for
+  two temporally adjacent real clips and empty for a clip too short for real tracking,
+  matching what the underlying player-selection status already said about that clip.
+
+  12 tests added: 5 pinning `near_pid` in `utils/player_selection.py` (including that it
+  is still reported on an otherwise-failed selection, and that it serialises as a plain
+  int rather than a numpy scalar that would truncate the JSON write - the same failure
+  mode `opposite_sides` was already guarded against), 7 for the video-combining path
+  including a real ffmpeg round trip that concatenates two differently-sized synthetic
+  clips and checks the frame count reflects both rather than only one making it in.
+  533 to 545.
+
 ### Changed
 ### Changed
 

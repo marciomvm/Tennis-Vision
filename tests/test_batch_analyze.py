@@ -9,10 +9,19 @@ computed correctly (weighted, not naively averaged) or that no per-player total 
 fabricated.
 """
 import json
+import shutil
 
+import numpy as np
 import pytest
 
-from tools.batch_analyze import _clip_record, _resolve_clips, _segment_context, aggregate_results
+from tools.batch_analyze import (
+    _clip_record,
+    _resolve_clips,
+    _segment_context,
+    aggregate_results,
+    build_concat_command,
+    combine_videos,
+)
 
 
 def _record(clip="a.mp4", total=1, p1=0, p2=0, speed_p1=None, speed_p2=None,
@@ -288,3 +297,91 @@ def test_a_real_two_clip_batch_end_to_end(tmp_path):
 
     csv_text = (out_dir / "batch_report.csv").read_text(encoding="utf-8")
     assert "ref_000.mp4" in csv_text and "ref_001.mp4" in csv_text
+
+
+# ── near_camera_pid: read through from a real summary shape ────────────────────
+
+def test_clip_record_reads_near_camera_pid():
+    from pathlib import Path
+    summary = {"player_selection": {"status": "ok", "near_camera_pid": 2}}
+    record = _clip_record(Path("clip.mp4"), summary, {})
+    assert record["near_camera_pid"] == 2
+
+
+def test_clip_record_near_camera_pid_absent_is_none():
+    from pathlib import Path
+    record = _clip_record(Path("clip.mp4"), {}, {})
+    assert record["near_camera_pid"] is None
+
+
+# ── combining rendered clips into one video ─────────────────────────────────────
+
+def test_concat_command_lists_inputs_in_order():
+    from pathlib import Path
+
+    cmd = build_concat_command(
+        [Path("a.avi"), Path("b.avi"), Path("c.avi")], Path("out.mp4"))
+    input_flags = [i for i, tok in enumerate(cmd) if tok == "-i"]
+    named = [cmd[i + 1] for i in input_flags]
+    assert named == ["a.avi", "b.avi", "c.avi"]
+
+
+def test_concat_command_uses_the_filter_not_the_demuxer():
+    """The concat FILTER re-encodes and tolerates mismatched codec parameters; the
+    concat DEMUXER (-f concat) is faster but requires identical inputs, which nothing
+    here guarantees - main.py's own save_video can fall back from XVID to MJPG."""
+    from pathlib import Path
+
+    cmd = build_concat_command([Path("a.avi"), Path("b.avi")], Path("out.mp4"))
+    assert "-filter_complex" in cmd
+    assert "-f" not in cmd
+
+
+def test_concat_command_references_every_input_in_the_filter_graph():
+    from pathlib import Path
+
+    cmd = build_concat_command(
+        [Path("a.avi"), Path("b.avi"), Path("c.avi"), Path("d.avi")], Path("out.mp4"))
+    graph = cmd[cmd.index("-filter_complex") + 1]
+    assert graph == "[0:v][1:v][2:v][3:v]concat=n=4:v=1:a=0[outv]"
+
+
+def test_combine_videos_with_nothing_to_combine_fails_cleanly(tmp_path):
+
+    ok, error = combine_videos([], tmp_path / "out.mp4")
+    assert ok is False
+    assert "no rendered clips" in error
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not on PATH")
+def test_combine_videos_real_ffmpeg_round_trip(tmp_path):
+    """
+    Builds two tiny real clips with DIFFERENT dimensions and actually concatenates
+    them, checking that the result plays back with all of both clips' frames -
+    exactly the class of bug a mocked subprocess call cannot catch, and exactly why
+    the concat FILTER (which can scale/normalise) rather than the demuxer is used.
+    """
+    import cv2
+
+    def _clip(path, n, size, value):
+        w, h = size
+        writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (w, h))
+        for _ in range(n):
+            writer.write(np.full((h, w, 3), value, np.uint8))
+        writer.release()
+
+    a = tmp_path / "a.mp4"
+    b = tmp_path / "b.mp4"
+    _clip(a, 15, (64, 48), 50)
+    _clip(b, 20, (64, 48), 200)
+
+    out = tmp_path / "combined.mp4"
+    ok, error = combine_videos([a, b], out)
+
+    assert ok, error
+    cap = cv2.VideoCapture(str(out))
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    # Re-encoding can shift the count by a frame or two; it must not be close to
+    # either clip ALONE, which is what "only one clip made it in" would look like.
+    assert frame_count >= 30
